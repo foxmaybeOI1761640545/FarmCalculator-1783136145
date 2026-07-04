@@ -63,6 +63,8 @@ const matureHourInput = ref<HTMLInputElement | null>(null)
 const matureMinuteInput = ref<HTMLInputElement | null>(null)
 const waterHourInput = ref<HTMLInputElement | null>(null)
 const waterMinuteInput = ref<HTMLInputElement | null>(null)
+const mainScrollContainer = ref<HTMLElement | null>(null)
+const resultPanel = ref<HTMLElement | null>(null)
 
 const currentCrop = computed(() => crops.find((crop) => crop.name === cropName.value) ?? crops[1])
 const isClockMode = computed(() => timeMode.value === TIME_MODE_CLOCK)
@@ -216,10 +218,14 @@ function cycleTimeMode(): void {
 }
 
 function scrollToBottomOnMobile(): void {
-  if (!window.matchMedia('(max-width: 780px)').matches) return
   nextTick(() => {
-    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' })
+    if (!mainScrollContainer.value || !resultPanel.value) return
+    resultPanel.value.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   })
+}
+
+function handlePlaceholderAction(actionName: string): void {
+  console.info(`${actionName}功能待实现`)
 }
 
 function isHtmlInputElement(value: EventTarget | HTMLInputElement | null): value is HTMLInputElement {
@@ -358,74 +364,92 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <main class="page-shell" @keydown="handleGlobalKeydown">
-    <section class="hero-card">
-      <p class="eyebrow">Honor of Kings Farm Tool</p>
-      <h1><span class="desktop-title">王者荣耀农场最快成熟时间计算器</span><span class="mobile-title">王者荣耀农场<br />理论最快成熟时间<br />计算器</span></h1>
-      <p class="subtitle">注意：作物类型指 8/16/32 小时作物，不是当前还剩几小时成熟。</p>
-    </section>
+  <div class="app-shell" @keydown="handleGlobalKeydown">
+    <header class="app-header">
+      <h1>农场计算器</h1>
+      <button class="icon-button" type="button" aria-label="设置" @click="handlePlaceholderAction('设置')">⚙️</button>
+    </header>
 
-    <section class="calculator-grid">
-      <form class="panel input-panel" @submit.prevent="calculate">
-        <div class="panel-heading">
-          <span>输入参数</span>
-          <small class="desktop-shortcuts">Tab 切换作物，Alt+X 切换时间模式，连续 3 次 Backspace 清空</small>
-          <small class="mobile-clear-hint">连续 3 次删除可清空所有输入，并回到第一个输入框</small>
-        </div>
+    <main ref="mainScrollContainer" class="app-main">
+      <div class="page-shell">
+        <section class="notice-card" aria-label="使用提示">
+          <p>注意：作物类型指 8/16/32 小时作物，不是当前还剩几小时成熟。</p>
+        </section>
 
-        <label class="field full">
-          <span>作物类型</span>
-          <select v-model="cropName" @change="clearError">
-            <option v-for="crop in crops" :key="crop.name" :value="crop.name">{{ crop.name }}</option>
-          </select>
-        </label>
+        <section class="calculator-grid">
+          <form class="panel input-panel" @submit.prevent="calculate">
+            <div class="panel-heading">
+              <span>输入参数</span>
+              <small class="desktop-shortcuts">Tab 切换作物，Alt+X 切换时间模式，连续 3 次 Backspace 清空</small>
+              <small class="mobile-clear-hint">连续 3 次删除可清空所有输入，并回到第一个输入框</small>
+            </div>
 
-        <div class="field full">
-          <span>成熟时间输入</span>
-          <div class="segmented">
-            <label><input v-model="timeMode" type="radio" :value="TIME_MODE_COUNTDOWN" /> 显示倒计时</label>
-            <label><input v-model="timeMode" type="radio" :value="TIME_MODE_CLOCK" /> 显示具体时间</label>
-          </div>
-        </div>
+            <label class="field full">
+              <span>作物类型</span>
+              <select v-model="cropName" @change="clearError">
+                <option v-for="crop in crops" :key="crop.name" :value="crop.name">{{ crop.name }}</option>
+              </select>
+            </label>
 
-        <div v-if="needsManualDay" class="field full compact-row">
-          <span>日期</span>
-          <select v-model="clockDay">
-            <option>{{ CLOCK_DAY_TODAY }}</option>
-            <option>{{ CLOCK_DAY_TOMORROW }}</option>
-          </select>
-        </div>
-        <p v-else-if="isClockMode" class="date-hint">日期：{{ clockAutoDay }}</p>
+            <div class="field full">
+              <span>成熟时间输入</span>
+              <div class="segmented">
+                <label><input v-model="timeMode" type="radio" :value="TIME_MODE_COUNTDOWN" /> 显示倒计时</label>
+                <label><input v-model="timeMode" type="radio" :value="TIME_MODE_CLOCK" /> 显示具体时间</label>
+              </div>
+            </div>
 
-        <div class="time-row">
-          <span class="row-label">{{ isClockMode ? '预计成熟时间' : '当前成熟剩余' }}</span>
-          <input ref="matureHourInput" v-model="matureHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, matureHourMax, matureMinuteInput)" @keydown="routeOverflowDigit($event, matureHourMax, matureMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureHour, matureHourMax, matureMinuteInput)" />
-          <span class="unit-label">{{ isClockMode ? '点' : '小时' }}</span>
-          <input ref="matureMinuteInput" v-model="matureMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, waterHourInput)" @keydown="routeOverflowDigit($event, 59, waterHourInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureMinute, 59, waterHourInput)" />
-          <span class="unit-label suffix-label">{{ isClockMode ? '分成熟' : '分钟后成熟' }}</span>
-        </div>
+            <div v-if="needsManualDay" class="field full compact-row">
+              <span>日期</span>
+              <select v-model="clockDay">
+                <option>{{ CLOCK_DAY_TODAY }}</option>
+                <option>{{ CLOCK_DAY_TOMORROW }}</option>
+              </select>
+            </div>
+            <p v-else-if="isClockMode" class="date-hint">日期：{{ clockAutoDay }}</p>
 
-        <div class="time-row">
-          <span class="row-label">当前水分还能维持</span>
-          <input ref="waterHourInput" v-model="waterHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, waterHourMax, waterMinuteInput)" @keydown="routeOverflowDigit($event, waterHourMax, waterMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, waterHour, waterHourMax, waterMinuteInput)" />
-          <span class="unit-label">小时</span>
-          <input ref="waterMinuteInput" v-model="waterMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, null)" @keydown="routeOverflowDigit($event, 59, null)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="calculate" @input="sanitizeNumber($event, waterMinute, 59)" />
-          <span class="unit-label suffix-label">分钟</span>
-        </div>
+            <div class="time-row">
+              <span class="row-label">{{ isClockMode ? '预计成熟时间' : '当前成熟剩余' }}</span>
+              <input ref="matureHourInput" v-model="matureHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, matureHourMax, matureMinuteInput)" @keydown="routeOverflowDigit($event, matureHourMax, matureMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureHour, matureHourMax, matureMinuteInput)" />
+              <span class="unit-label">{{ isClockMode ? '点' : '小时' }}</span>
+              <input ref="matureMinuteInput" v-model="matureMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, waterHourInput)" @keydown="routeOverflowDigit($event, 59, waterHourInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureMinute, 59, waterHourInput)" />
+              <span class="unit-label suffix-label">{{ isClockMode ? '分成熟' : '分钟后成熟' }}</span>
+            </div>
 
-        <div class="actions">
-          <button class="primary" type="submit">🧮 计算</button>
-          <button type="button" @click="clearInputs">🗑 清空</button>
-        </div>
+            <div class="time-row">
+              <span class="row-label">当前水分还能维持</span>
+              <input ref="waterHourInput" v-model="waterHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, waterHourMax, waterMinuteInput)" @keydown="routeOverflowDigit($event, waterHourMax, waterMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, waterHour, waterHourMax, waterMinuteInput)" />
+              <span class="unit-label">小时</span>
+              <input ref="waterMinuteInput" v-model="waterMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, null)" @keydown="routeOverflowDigit($event, 59, null)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="calculate" @input="sanitizeNumber($event, waterMinute, 59)" />
+              <span class="unit-label suffix-label">分钟</span>
+            </div>
 
-        <p class="reference">{{ referenceText }}</p>
-      </form>
+            <div class="actions">
+              <button class="primary" type="submit">🧮 计算</button>
+              <button type="button" @click="clearInputs">🗑 清空</button>
+            </div>
 
-      <aside class="panel result-panel">
-        <div class="panel-heading success"><span>计算结果</span></div>
-        <div v-if="error" class="error-box">{{ error }}</div>
-        <pre>{{ result }}</pre>
-      </aside>
-    </section>
-  </main>
+            <p class="reference">{{ referenceText }}</p>
+          </form>
+
+          <aside ref="resultPanel" class="panel result-panel">
+            <div class="panel-heading success"><span>计算结果</span></div>
+            <div v-if="error" class="error-box">{{ error }}</div>
+            <pre>{{ result }}</pre>
+          </aside>
+        </section>
+      </div>
+    </main>
+
+    <footer class="app-footer">
+      <button class="footer-action" type="button" @click="handlePlaceholderAction('喝水提醒')">
+        <span aria-hidden="true">💧</span>
+        <span>喝水提醒</span>
+      </button>
+      <button class="footer-action" type="button" @click="handlePlaceholderAction('屏幕记录')">
+        <span aria-hidden="true">🎥</span>
+        <span>屏幕记录</span>
+      </button>
+    </footer>
+  </div>
 </template>
