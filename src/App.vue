@@ -1,38 +1,68 @@
-<script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+<script setup lang="ts">
+import { computed, nextTick, onMounted, ref, watch, type Ref } from 'vue'
 
-const TIME_MODE_COUNTDOWN = 'countdown'
-const TIME_MODE_CLOCK = 'clock'
-const TIME_MODE_LABELS = {
+type TimeMode = 'countdown' | 'clock'
+type ClockDay = '今日' | '明日'
+
+interface CropConfig {
+  name: string
+  baseMinutes: number
+  waterMaxMinutes: number
+}
+
+interface CalculationInput {
+  now: Date
+  crop: CropConfig
+}
+
+interface CalculationResult {
+  matureLeft: number
+  waterLeftInput: number
+  elapsedSinceLastWater: number
+  currentWaterReduce: number
+  matureAfterWater: number
+  fastestLeft: number
+  fastestEta: Date
+}
+
+type InputRef = Ref<HTMLInputElement | null>
+type MaybeInputRef = InputRef | HTMLInputElement | null
+type NumericInputEvent = Event
+type NumericKeyboardEvent = KeyboardEvent
+type NumericInputBeforeEvent = InputEvent
+
+const TIME_MODE_COUNTDOWN: TimeMode = 'countdown'
+const TIME_MODE_CLOCK: TimeMode = 'clock'
+const TIME_MODE_LABELS: Record<TimeMode, string> = {
   [TIME_MODE_COUNTDOWN]: '倒计时',
   [TIME_MODE_CLOCK]: '具体时间',
 }
-const CLOCK_DAY_TODAY = '今日'
-const CLOCK_DAY_TOMORROW = '明日'
+const CLOCK_DAY_TODAY: ClockDay = '今日'
+const CLOCK_DAY_TOMORROW: ClockDay = '明日'
 const STORAGE_KEY = 'farm-calculator-time-mode'
 const BACKSPACE_CLEAR_PRESS_COUNT = 3
 const BACKSPACE_CLEAR_WINDOW_MS = 800
 
-const crops = [
+const crops: CropConfig[] = [
   { name: '8小时作物', baseMinutes: 8 * 60, waterMaxMinutes: 2 * 60 + 40 },
   { name: '16小时作物', baseMinutes: 16 * 60, waterMaxMinutes: 5 * 60 + 20 },
   { name: '32小时作物', baseMinutes: 32 * 60, waterMaxMinutes: 10 * 60 + 40 },
 ]
 
-const cropName = ref('16小时作物')
-const timeMode = ref(TIME_MODE_COUNTDOWN)
-const clockDay = ref(CLOCK_DAY_TODAY)
-const matureHour = ref('')
-const matureMinute = ref('')
-const waterHour = ref('')
-const waterMinute = ref('')
-const result = ref('请输入数据后点击“计算”按钮计算；\n\n或者在最后一个输入框按回车计算；\n\n计算结果将会显示在这里。')
-const error = ref('')
-const backspacePressTimes = ref([])
-const matureHourInput = ref(null)
-const matureMinuteInput = ref(null)
-const waterHourInput = ref(null)
-const waterMinuteInput = ref(null)
+const cropName = ref<string>('16小时作物')
+const timeMode = ref<TimeMode>(TIME_MODE_COUNTDOWN)
+const clockDay = ref<ClockDay>(CLOCK_DAY_TODAY)
+const matureHour = ref<string>('')
+const matureMinute = ref<string>('')
+const waterHour = ref<string>('')
+const waterMinute = ref<string>('')
+const result = ref<string>('请输入数据后点击“计算”按钮计算；\n\n或者在最后一个输入框按回车计算；\n\n计算结果将会显示在这里。')
+const error = ref<string>('')
+const backspacePressTimes = ref<number[]>([])
+const matureHourInput = ref<HTMLInputElement | null>(null)
+const matureMinuteInput = ref<HTMLInputElement | null>(null)
+const waterHourInput = ref<HTMLInputElement | null>(null)
+const waterMinuteInput = ref<HTMLInputElement | null>(null)
 
 const currentCrop = computed(() => crops.find((crop) => crop.name === cropName.value) ?? crops[1])
 const isClockMode = computed(() => timeMode.value === TIME_MODE_CLOCK)
@@ -56,7 +86,7 @@ const waterHourMax = computed(() => Math.floor(currentCrop.value.waterMaxMinutes
 
 onMounted(() => {
   const savedMode = localStorage.getItem(STORAGE_KEY)
-  if (savedMode && TIME_MODE_LABELS[savedMode]) timeMode.value = savedMode
+  if (savedMode === TIME_MODE_COUNTDOWN || savedMode === TIME_MODE_CLOCK) timeMode.value = savedMode
   nextTick(() => matureHourInput.value?.focus())
 })
 
@@ -66,32 +96,32 @@ watch(timeMode, (mode) => {
   nextTick(() => matureHourInput.value?.focus())
 })
 
-function toOptionalInteger(value) {
+function toOptionalInteger(value: string): number | null {
   const text = String(value ?? '').trim()
   if (text === '') return 0
   if (!/^\d+$/.test(text)) return null
   return Number(text)
 }
 
-function readNonNegativeInt(value, fieldName) {
+function readNonNegativeInt(value: string, fieldName: string): number {
   const text = String(value ?? '').trim()
   if (text === '') return 0
   if (!/^\d+$/.test(text)) throw new Error(`${fieldName} 只能输入非负整数。`)
   return Number(text)
 }
 
-function readMinute(value, fieldName) {
+function readMinute(value: string, fieldName: string): number {
   const minute = readNonNegativeInt(value, fieldName)
   if (minute >= 60) throw new Error(`${fieldName} 必须在 0-59 之间。`)
   return minute
 }
 
-function ceilPositive(value) {
+function ceilPositive(value: number): number {
   if (value <= 0) return 0
   return Math.ceil(value)
 }
 
-function formatMinutes(minutes) {
+function formatMinutes(minutes: number): string {
   const totalSeconds = ceilPositive(minutes * 60)
   if (totalSeconds <= 0) return '0分钟'
   const hours = Math.floor(totalSeconds / 3600)
@@ -100,12 +130,12 @@ function formatMinutes(minutes) {
   return [hours ? `${hours}小时` : '', mins ? `${mins}分钟` : '', secs ? `${secs}秒` : ''].join('')
 }
 
-function formatDateTime(date) {
-  const pad = (num) => String(num).padStart(2, '0')
+function formatDateTime(date: Date): string {
+  const pad = (num: number): string => String(num).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
-function readMatureLeft(now, crop) {
+function readMatureLeft(now: Date, crop: CropConfig): number {
   if (isClockMode.value) {
     const hour = readNonNegativeInt(matureHour.value, '预计成熟时间小时')
     const minute = readMinute(matureMinute.value, '预计成熟时间分钟')
@@ -126,15 +156,16 @@ function readMatureLeft(now, crop) {
   return readNonNegativeInt(matureHour.value, '当前成熟剩余小时') * 60 + readMinute(matureMinute.value, '当前成熟剩余分钟')
 }
 
-function clockDeltaMinutes(now, target) {
+function clockDeltaMinutes(now: Date, target: Date): number {
   return Math.ceil(Math.max(0, target.getTime() - now.getTime()) / 60000)
 }
 
-function calculate() {
+function calculate(): void {
   try {
     clearError()
     const crop = currentCrop.value
     const now = new Date()
+    const calculationInput: CalculationInput = { now, crop }
     const matureLeft = readMatureLeft(now, crop)
     const waterLeftInput = readNonNegativeInt(waterHour.value, '当前水分剩余小时') * 60 + readMinute(waterMinute.value, '当前水分剩余分钟')
     if (matureLeft <= 0) throw new Error('当前成熟剩余时间必须大于 0。')
@@ -149,15 +180,18 @@ function calculate() {
     const matureAfterWater = Math.max(0, matureLeft - currentWaterReduce)
     const fastestLeft = matureAfterWater * 4 / 5
     const fastestEta = new Date(now.getTime() + Math.ceil(fastestLeft * 60) * 1000)
+    const calculationResult: CalculationResult = { matureLeft, waterLeftInput, elapsedSinceLastWater, currentWaterReduce, matureAfterWater, fastestLeft, fastestEta }
+    void calculationInput
+    void calculationResult
 
     result.value = `当前按【${crop.name}】计算（成熟时间输入：${TIME_MODE_LABELS[timeMode.value]}）\n\n距上次浇水：${formatMinutes(elapsedSinceLastWater)}\n本次可减少：${formatMinutes(currentWaterReduce)}\n浇水后剩余：${formatMinutes(matureAfterWater)}\n\n理论最快还需：${formatMinutes(fastestLeft)}\n预计最快成熟时间：\n${formatDateTime(fastestEta)}`
     scrollToBottomOnMobile()
-  } catch (exception) {
-    error.value = exception.message
+  } catch (exception: unknown) {
+    error.value = exception instanceof Error ? exception.message : '计算失败，请检查输入。'
   }
 }
 
-function clearInputs() {
+function clearInputs(): void {
   matureHour.value = ''
   matureMinute.value = ''
   waterHour.value = ''
@@ -168,31 +202,36 @@ function clearInputs() {
   nextTick(() => matureHourInput.value?.focus())
 }
 
-function clearError() {
+function clearError(): void {
   error.value = ''
 }
 
-function cycleCrop(step = 1) {
+function cycleCrop(step = 1): void {
   const currentIndex = crops.findIndex((crop) => crop.name === cropName.value)
   cropName.value = crops[(currentIndex + step + crops.length) % crops.length].name
 }
 
-function cycleTimeMode() {
+function cycleTimeMode(): void {
   timeMode.value = isClockMode.value ? TIME_MODE_COUNTDOWN : TIME_MODE_CLOCK
 }
 
-function scrollToBottomOnMobile() {
+function scrollToBottomOnMobile(): void {
   if (!window.matchMedia('(max-width: 780px)').matches) return
   nextTick(() => {
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' })
   })
 }
 
-function orderedInputElements() {
-  return [matureHourInput.value, matureMinuteInput.value, waterHourInput.value, waterMinuteInput.value].filter(Boolean)
+function isHtmlInputElement(value: EventTarget | HTMLInputElement | null): value is HTMLInputElement {
+  return typeof HTMLInputElement !== 'undefined' && value instanceof HTMLInputElement
 }
 
-function focusAdjacentInput(event, step) {
+function orderedInputElements(): HTMLInputElement[] {
+  return [matureHourInput.value, matureMinuteInput.value, waterHourInput.value, waterMinuteInput.value].filter(isHtmlInputElement)
+}
+
+function focusAdjacentInput(event: NumericKeyboardEvent, step: number): void {
+  if (!isHtmlInputElement(event.target)) return
   const inputs = orderedInputElements()
   const currentIndex = inputs.indexOf(event.target)
   if (currentIndex === -1) return
@@ -202,31 +241,33 @@ function focusAdjacentInput(event, step) {
   focusAndSelectInput(target)
 }
 
-function resolveInputElement(inputRef) {
+function resolveInputElement(inputRef: MaybeInputRef): HTMLInputElement | null {
   if (!inputRef) return null
   if (typeof HTMLInputElement !== 'undefined' && inputRef instanceof HTMLInputElement) return inputRef
-  return inputRef.value ?? null
+  const candidate: unknown = inputRef.value
+  if (isHtmlInputElement(candidate as EventTarget | HTMLInputElement | null)) return candidate as HTMLInputElement
+  return null
 }
 
-function focusAndSelectInput(input) {
+function focusAndSelectInput(input: HTMLInputElement): void {
   input.focus()
   input.select()
 }
 
-function scheduleFocusInput(input) {
+function scheduleFocusInput(input: HTMLInputElement): void {
   nextTick(() => {
     setTimeout(() => focusAndSelectInput(input), 0)
   })
 }
 
-function setInputModel(input, value) {
+function setInputModel(input: HTMLInputElement, value: string): void {
   if (input === matureHourInput.value) matureHour.value = value
   if (input === matureMinuteInput.value) matureMinute.value = value
   if (input === waterHourInput.value) waterHour.value = value
   if (input === waterMinuteInput.value) waterMinute.value = value
 }
 
-function maxForInput(input) {
+function maxForInput(input: HTMLInputElement): number | null {
   if (input === matureHourInput.value) return matureHourMax.value
   if (input === matureMinuteInput.value) return 59
   if (input === waterHourInput.value) return waterHourMax.value
@@ -234,28 +275,30 @@ function maxForInput(input) {
   return null
 }
 
-function shouldAutoAdvance(value, maxValue) {
+function shouldAutoAdvance(value: string, maxValue: number): boolean {
   return value !== '' && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue)
 }
 
-function advanceIfInputIsComplete(input, maxValue, nextRef) {
+function advanceIfInputIsComplete(input: HTMLInputElement, maxValue: number, nextRef: MaybeInputRef): void {
   const nextInput = resolveInputElement(nextRef)
   if (!nextInput || !shouldAutoAdvance(input.value.trim(), maxValue)) return
   scheduleFocusInput(nextInput)
 }
 
-function routeOverflowDigit(event, maxValue, nextRef) {
+function routeOverflowDigit(event: NumericKeyboardEvent, maxValue: number, nextRef: MaybeInputRef): void {
   const digit = event.key
   if (!/^\d$/.test(digit)) return
   routeOverflowText(event, digit, maxValue, nextRef)
 }
 
-function routeOverflowBeforeInput(event, maxValue, nextRef) {
-  if (event.inputType !== 'insertText' || !/^\d$/.test(event.data ?? '')) return
-  routeOverflowText(event, event.data, maxValue, nextRef)
+function routeOverflowBeforeInput(event: NumericInputBeforeEvent, maxValue: number, nextRef: MaybeInputRef): void {
+  const inputText = event.data ?? ''
+  if (event.inputType !== 'insertText' || !/^\d$/.test(inputText)) return
+  routeOverflowText(event, inputText, maxValue, nextRef)
 }
 
-function routeOverflowText(event, text, maxValue, nextRef) {
+function routeOverflowText(event: NumericKeyboardEvent | NumericInputBeforeEvent, text: string, maxValue: number, nextRef: MaybeInputRef): void {
+  if (!isHtmlInputElement(event.target)) return
   const input = event.target
   const nextInput = resolveInputElement(nextRef)
   if (!nextInput) return
@@ -282,15 +325,16 @@ function routeOverflowText(event, text, maxValue, nextRef) {
   })
 }
 
-function sanitizeNumber(event, model, maxValue, nextRef) {
+function sanitizeNumber(event: NumericInputEvent, _modelValue: string, maxValue: number, nextRef: MaybeInputRef = null): void {
+  if (!isHtmlInputElement(event.target)) return
   const cleaned = event.target.value.replace(/\D/g, '')
   const normalized = cleaned === '' ? '' : String(Math.min(Number(cleaned), maxValue))
-  model.value = normalized
+  setInputModel(event.target, normalized)
   event.target.value = normalized
   advanceIfInputIsComplete(event.target, maxValue, nextRef)
 }
 
-function handleGlobalKeydown(event) {
+function handleGlobalKeydown(event: KeyboardEvent): void {
   if (event.altKey && event.key.toLowerCase() === 'x') {
     event.preventDefault()
     cycleTimeMode()
@@ -355,17 +399,17 @@ function handleGlobalKeydown(event) {
 
         <div class="time-row">
           <span class="row-label">{{ isClockMode ? '预计成熟时间' : '当前成熟剩余' }}</span>
-          <input ref="matureHourInput" v-model="matureHour" inputmode="numeric" @beforeinput="routeOverflowBeforeInput($event, matureHourMax, matureMinuteInput)" @keydown="routeOverflowDigit($event, matureHourMax, matureMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureHour, matureHourMax, matureMinuteInput)" />
+          <input ref="matureHourInput" v-model="matureHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, matureHourMax, matureMinuteInput)" @keydown="routeOverflowDigit($event, matureHourMax, matureMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureHour, matureHourMax, matureMinuteInput)" />
           <span class="unit-label">{{ isClockMode ? '点' : '小时' }}</span>
-          <input ref="matureMinuteInput" v-model="matureMinute" inputmode="numeric" @beforeinput="routeOverflowBeforeInput($event, 59, waterHourInput)" @keydown="routeOverflowDigit($event, 59, waterHourInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureMinute, 59, waterHourInput)" />
+          <input ref="matureMinuteInput" v-model="matureMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, waterHourInput)" @keydown="routeOverflowDigit($event, 59, waterHourInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureMinute, 59, waterHourInput)" />
           <span class="unit-label suffix-label">{{ isClockMode ? '分成熟' : '分钟后成熟' }}</span>
         </div>
 
         <div class="time-row">
           <span class="row-label">当前水分还能维持</span>
-          <input ref="waterHourInput" v-model="waterHour" inputmode="numeric" @beforeinput="routeOverflowBeforeInput($event, waterHourMax, waterMinuteInput)" @keydown="routeOverflowDigit($event, waterHourMax, waterMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, waterHour, waterHourMax, waterMinuteInput)" />
+          <input ref="waterHourInput" v-model="waterHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, waterHourMax, waterMinuteInput)" @keydown="routeOverflowDigit($event, waterHourMax, waterMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, waterHour, waterHourMax, waterMinuteInput)" />
           <span class="unit-label">小时</span>
-          <input ref="waterMinuteInput" v-model="waterMinute" inputmode="numeric" @beforeinput="routeOverflowBeforeInput($event, 59, null)" @keydown="routeOverflowDigit($event, 59, null)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="calculate" @input="sanitizeNumber($event, waterMinute, 59)" />
+          <input ref="waterMinuteInput" v-model="waterMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, null)" @keydown="routeOverflowDigit($event, 59, null)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="calculate" @input="sanitizeNumber($event, waterMinute, 59)" />
           <span class="unit-label suffix-label">分钟</span>
         </div>
 
