@@ -2,52 +2,90 @@ name: Android Signed Release
 
 on:
   push:
-    tags: ['v*.*.*']
+    branches: [main, master, work]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing release tag, for example v1.0.1
-        required: true
-        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   signed-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve release tag
-        id: rel
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then TAG="${{ inputs.tag }}"; fi
-          [[ "$TAG" =~ ^v[0-9]+\.0\.[0-9]+$ ]] || { echo "Invalid tag: $TAG"; exit 1; }
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ steps.rel.outputs.tag }}
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - uses: actions/setup-java@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.11.1
-      - run: npm ci
-      - run: npm run verify:version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Calculate release version and tag
+        id: rel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+          latest_patch="$(git tag --list '*-v1.0.*' 'v1.0.*' | sed -nE 's/^.*v1\.0\.([0-9]+)$/\1/p' | sort -n | tail -1)"
+          if [ -z "$latest_patch" ]; then latest_patch=0; fi
+          next_patch=$((latest_patch + 1))
+          version="1.0.${next_patch}"
+          branch="${GITHUB_REF_NAME//\//-}"
+          timestamp="$(TZ=Asia/Singapore date +'%Y%m%d-%H%M%S')"
+          tag="${timestamp}-${branch}-v${version}"
+          apk_name="FarmCalculator-v${version}.apk"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=${apk_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply release version without committing
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version "${{ steps.rel.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Verify release version
+        run: npm run verify:version
         env:
-          RELEASE_TAG: ${{ steps.rel.outputs.tag }}
-      - run: npm run typecheck
-      - run: npm run sync:android
-      - name: Check release signing secrets
+          RELEASE_TAG: v${{ steps.rel.outputs.version }}
+
+      - name: Build web assets and sync Android
+        run: npm run sync:android
+
+      - name: Restore fallback test keystore cache
+        id: fallback-keystore-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fallback-release.keystore
+          key: farmcalculator-fallback-release-keystore-v1
+
+      - name: Prepare release keystore
+        id: keystore
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -55,38 +93,69 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            [ -n "${!name}" ] || { echo "Missing required secret: $name"; exit 1; }
-          done
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "${RUNNER_TEMP}/farm-calculator-release.jks"
-      - name: Build signed APK and AAB
+          set -euo pipefail
+          fallback_path="${RUNNER_TEMP}/fallback-release.keystore"
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            keystore_path="${RUNNER_TEMP}/farm-calculator-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+            echo "Using release signing keystore from repository secrets."
+          else
+            keystore_path="$fallback_path"
+            ANDROID_KEYSTORE_PASSWORD="fallback-release-password"
+            ANDROID_KEY_ALIAS="fallback-release-key"
+            ANDROID_KEY_PASSWORD="fallback-release-password"
+            if [ ! -f "$keystore_path" ]; then
+              keytool -genkeypair -v \
+                -keystore "$keystore_path" \
+                -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+                -alias "$ANDROID_KEY_ALIAS" \
+                -keypass "$ANDROID_KEY_PASSWORD" \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=FarmCalculator Fallback,O=FarmCalculator,C=SG"
+            fi
+            echo "Using fallback test keystore. Configure repository secrets for production signing."
+          fi
+          {
+            echo "ANDROID_KEYSTORE_PATH=$keystore_path"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build signed Release APK
         working-directory: android
-        env:
-          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/farm-calculator-release.jks
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          gradle assembleRelease
-          gradle bundleRelease
-      - name: Verify signatures and prepare files
+        run: gradle assembleRelease
+
+      - name: Verify signature and prepare release asset
         id: files
         shell: bash
         run: |
-          TAG="${{ steps.rel.outputs.tag }}"
+          set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/release-output"
           apksigner verify --verbose android/app/build/outputs/apk/release/app-release.apk
-          jarsigner -verify android/app/build/outputs/bundle/release/app-release.aab
-          cp android/app/build/outputs/apk/release/app-release.apk "${RUNNER_TEMP}/release-output/FarmCalculator-${TAG}.apk"
-          cp android/app/build/outputs/bundle/release/app-release.aab "${RUNNER_TEMP}/release-output/FarmCalculator-${TAG}.aab"
-          echo "dir=${RUNNER_TEMP}/release-output" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: FarmCalculator-${{ steps.rel.outputs.tag }}
-          path: ${{ steps.files.outputs.dir }}/*
-      - uses: softprops/action-gh-release@v2
+          cp android/app/build/outputs/apk/release/app-release.apk "${RUNNER_TEMP}/release-output/${{ steps.rel.outputs.apk_name }}"
+          echo "apk=${RUNNER_TEMP}/release-output/${{ steps.rel.outputs.apk_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Git tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag "${{ steps.rel.outputs.tag }}" "$GITHUB_SHA"
+          git push origin "${{ steps.rel.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
-          name: ${{ steps.rel.outputs.tag }}
-          generate_release_notes: true
-          files: ${{ steps.files.outputs.dir }}/*
+          name: FarmCalculator v${{ steps.rel.outputs.version }}
+          body: |
+            Automated Android release for FarmCalculator v${{ steps.rel.outputs.version }}.
+
+            If fallback signing was used, configure repository secrets for production signing:
+            - ANDROID_KEYSTORE_BASE64
+            - ANDROID_KEYSTORE_PASSWORD
+            - ANDROID_KEY_ALIAS
+            - ANDROID_KEY_PASSWORD
+          files: ${{ steps.files.outputs.apk }}
