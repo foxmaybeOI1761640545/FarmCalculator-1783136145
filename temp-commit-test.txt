@@ -1,3 +1,0 @@
-Temporary file for one-time commit testing.
-
-This file was intentionally added to verify the repository commit workflow.
