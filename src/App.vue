@@ -224,10 +224,6 @@ function scrollToBottomOnMobile(): void {
   })
 }
 
-function handlePlaceholderAction(actionName: string): void {
-  console.info(`${actionName}功能待实现`)
-}
-
 function isHtmlInputElement(value: EventTarget | HTMLInputElement | null): value is HTMLInputElement {
   return typeof HTMLInputElement !== 'undefined' && value instanceof HTMLInputElement
 }
@@ -367,7 +363,6 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
   <div class="app-shell" @keydown="handleGlobalKeydown">
     <header class="app-header">
       <h1>农场计算器</h1>
-      <button class="icon-button" type="button" aria-label="设置" @click="handlePlaceholderAction('设置')">⚙️</button>
     </header>
 
     <main ref="mainScrollContainer" class="app-main">
@@ -377,7 +372,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
         </section>
 
         <section class="calculator-grid">
-          <form class="panel input-panel" @submit.prevent="calculate">
+          <form id="calculator-form" class="panel input-panel" @submit.prevent="calculate">
             <div class="panel-heading">
               <span>输入参数</span>
               <small class="desktop-shortcuts">Tab 切换作物，Alt+X 切换时间模式，连续 3 次 Backspace 清空</small>
@@ -424,11 +419,6 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
               <span class="unit-label suffix-label">分钟</span>
             </div>
 
-            <div class="actions">
-              <button class="primary" type="submit">🧮 计算</button>
-              <button type="button" @click="clearInputs">🗑 清空</button>
-            </div>
-
             <p class="reference">{{ referenceText }}</p>
           </form>
 
@@ -442,14 +432,8 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     </main>
 
     <footer class="app-footer">
-      <button class="footer-action" type="button" @click="handlePlaceholderAction('喝水提醒')">
-        <span aria-hidden="true">💧</span>
-        <span>喝水提醒</span>
-      </button>
-      <button class="footer-action" type="button" @click="handlePlaceholderAction('屏幕记录')">
-        <span aria-hidden="true">🎥</span>
-        <span>屏幕记录</span>
-      </button>
+      <button class="footer-button secondary" type="button" @click="clearInputs">清空</button>
+      <button class="footer-button primary" type="submit" form="calculator-form">计算</button>
     </footer>
   </div>
 </template>
