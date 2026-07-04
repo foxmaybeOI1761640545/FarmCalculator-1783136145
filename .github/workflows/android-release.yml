@@ -1,20 +1,24 @@
 name: Android Signed Release
 
 on:
-  push:
-    branches:
-      - '**'
   workflow_dispatch:
+  push:
+    branches: [main, master, work]
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 concurrency:
-  group: farmcalculator-release-${{ github.ref }}
-  cancel-in-progress: false
+  group: farmcalculator-release-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   signed-release:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -22,6 +26,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -54,7 +59,7 @@ jobs:
           set -euo pipefail
           git fetch --tags --force
 
-          branch_name="${GITHUB_REF_NAME}"
+          branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           branch_slug="$(printf '%s' "$branch_name" \
             | sed -E 's#[/[:space:]]+#-#g; s#[^A-Za-z0-9._-]+#-#g; s#-+#-#g; s#^-+##; s#-+$##')"
           if [ -z "$branch_slug" ]; then
@@ -164,10 +169,63 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          apk_path="android/app/build/outputs/apk/release/app-release.apk"
+
+          if [ ! -f "$apk_path" ]; then
+            echo "::error::Signed Release APK was not found at $apk_path"
+            find android/app/build/outputs/apk -maxdepth 4 -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+
+          if [ -z "$sdk_root" ]; then
+            echo "::error::ANDROID_SDK_ROOT and ANDROID_HOME are both unavailable."
+            exit 1
+          fi
+
+          if [ ! -d "$sdk_root/build-tools" ]; then
+            echo "::error::Android Build Tools directory was not found at $sdk_root/build-tools."
+            find "$sdk_root" -maxdepth 3 -type d 2>/dev/null || true
+            exit 1
+          fi
+
+          apksigner_path="$(
+            find "$sdk_root/build-tools" \
+              -mindepth 2 \
+              -maxdepth 2 \
+              -type f \
+              -name apksigner \
+              -print 2>/dev/null |
+            sort -V |
+            tail -n 1
+          )"
+
+          if [ -z "$apksigner_path" ] || [ ! -x "$apksigner_path" ]; then
+            echo "::error::apksigner was not found under $sdk_root/build-tools."
+            find "$sdk_root/build-tools" -maxdepth 2 -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Using apksigner: $apksigner_path"
+
+          "$apksigner_path" verify \
+            --verbose \
+            --print-certs \
+            "$apk_path"
+
           mkdir -p "${RUNNER_TEMP}/release-output"
-          apksigner verify --verbose android/app/build/outputs/apk/release/app-release.apk
-          cp android/app/build/outputs/apk/release/app-release.apk "${RUNNER_TEMP}/release-output/${{ steps.rel.outputs.apk_name }}"
-          echo "apk=${RUNNER_TEMP}/release-output/${{ steps.rel.outputs.apk_name }}" >> "$GITHUB_OUTPUT"
+
+          release_apk="${RUNNER_TEMP}/release-output/${{ steps.rel.outputs.apk_name }}"
+
+          cp "$apk_path" "$release_apk"
+
+          if [ ! -f "$release_apk" ]; then
+            echo "::error::Failed to prepare Release APK at $release_apk"
+            exit 1
+          fi
+
+          echo "apk=$release_apk" >> "$GITHUB_OUTPUT"
 
       - name: Create release notes
         id: notes
