@@ -7,11 +7,27 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Node
+# Node / Vite
 node_modules/
 dist/
 dist-ssr/
+.vite/
 *.local
+
+# Android build and signing outputs
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/assets/public/
+android/capacitor-cordova-android-plugins/
+*.apk
+*.aab
+*.jks
+*.keystore
+keystore.properties
+.env
+.env.*
 
 # Editor directories and files
 .vscode/*
@@ -28,7 +44,7 @@ dist-ssr/
 docs/_artifacts/
 docs/01-FlutterRemoteDevFlow
 
-# Flutter / Dart
+# Flutter / Dart legacy ignores
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
@@ -41,11 +57,6 @@ tools/*
 !tools/ear_training_mypiano_match_assets.py
 ios/Flutter/.last_build_id
 
-# Android signing secrets
-*.jks
-*.keystore
-android/app/release-keystore.jks
-
 # Local temporary folders
 _tmp_vite_app/
 temp/
@@ -54,5 +65,3 @@ temp/
 .codex/skills/version-release/**/*.local.env
 .codex/skills/version-release/**/local-auth.env
 .codex/skills/version-release/**/auth.env
-
-.vite/
