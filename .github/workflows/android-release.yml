@@ -58,6 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --tags --force
+          release_commit="$(git rev-parse HEAD)"
 
           branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           branch_slug="$(printf '%s' "$branch_name" \
@@ -96,6 +97,7 @@ jobs:
             echo "tag=${tag}"
             echo "apk_name=${apk_name}"
             echo "build_time=${build_time}"
+            echo "release_commit=${release_commit}"
             echo "prerelease=${prerelease}"
           } >> "$GITHUB_OUTPUT"
 
@@ -239,7 +241,7 @@ jobs:
           - Branch: ${{ steps.rel.outputs.branch_name }}
           - Branch slug: ${{ steps.rel.outputs.branch_slug }}
           - Version: ${{ steps.rel.outputs.version }}
-          - Commit SHA: ${{ github.sha }}
+          - Commit SHA: ${{ steps.rel.outputs.release_commit }}
           - Tag: ${{ steps.rel.outputs.tag }}
           - Build time: ${{ steps.rel.outputs.build_time }}
           - APK filename: ${{ steps.rel.outputs.apk_name }}
@@ -251,14 +253,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git tag "${{ steps.rel.outputs.tag }}" "$GITHUB_SHA"
+          git tag "${{ steps.rel.outputs.tag }}" "${{ steps.rel.outputs.release_commit }}"
           git push origin "${{ steps.rel.outputs.tag }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ steps.rel.outputs.release_commit }}
           name: FarmCalculator ${{ steps.rel.outputs.branch_slug }} v${{ steps.rel.outputs.version }}
           body_path: ${{ steps.notes.outputs.path }}
           prerelease: ${{ steps.rel.outputs.prerelease }}
