@@ -4,5 +4,4 @@ ext {
     targetSdkVersion = 35
     androidxAppCompatVersion = '1.7.0'
     androidxCoordinatorLayoutVersion = '1.2.0'
-    androidxCoreSplashScreenVersion = '1.0.1'
 }

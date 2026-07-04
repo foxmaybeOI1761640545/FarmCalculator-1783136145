@@ -59,6 +59,7 @@ android {
 
 dependencies {
     implementation project(':capacitor-android')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
 }
 
 apply from: 'capacitor.build.gradle'
