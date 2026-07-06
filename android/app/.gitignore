@@ -1,0 +1,7 @@
+build/
+src/main/assets/public/
+*.apk
+*.aab
+*.jks
+*.keystore
+keystore.properties
