@@ -12,18 +12,16 @@ interface CropConfig {
   waterMaxMinutes: number
 }
 
-interface CalculationInput {
-  now: Date
-  crop: CropConfig
-}
-
 interface CalculationResult {
+  cropName: string
+  timeModeLabel: string
   matureLeft: number
   waterLeftInput: number
   elapsedSinceLastWater: number
   currentWaterReduce: number
   matureAfterWater: number
   fastestLeft: number
+  savedMinutes: number
   fastestEta: Date
 }
 
@@ -63,7 +61,9 @@ const matureHour = ref<string>('')
 const matureMinute = ref<string>('')
 const waterHour = ref<string>('')
 const waterMinute = ref<string>('')
-const result = ref<string>('请输入数据后点击“计算”按钮计算；\n\n或者在最后一个输入框按回车计算；\n\n计算结果将会显示在这里。')
+const initialResultHint = '请输入数据后点击“计算”按钮计算；\n\n或者在最后一个输入框按回车计算；\n\n计算结果将会显示在这里。'
+const resultHint = ref<string>(initialResultHint)
+const calculationResult = ref<CalculationResult | null>(null)
 const error = ref<string>('')
 const backspacePressTimes = ref<number[]>([])
 const autoAdvanceEnabled = ref<boolean>(true)
@@ -301,7 +301,6 @@ function calculate(): void {
     clearError()
     const crop = currentCrop.value
     const now = new Date()
-    const calculationInput: CalculationInput = { now, crop }
     const matureLeft = readMatureLeft(now, crop)
     const waterLeftInput = readNonNegativeInt(waterHour.value, '当前水分剩余小时') * 60 + readMinute(waterMinute.value, '当前水分剩余分钟')
     if (matureLeft <= 0) throw new Error('当前成熟剩余时间必须大于 0。')
@@ -315,13 +314,23 @@ function calculate(): void {
     const currentWaterReduce = Math.min(matureLeft, elapsedSinceLastWater / 4)
     const matureAfterWater = Math.max(0, matureLeft - currentWaterReduce)
     const fastestLeft = matureAfterWater * 4 / 5
+    const savedMinutes = Math.max(0, Math.min(matureLeft, matureLeft - fastestLeft))
     const fastestEta = new Date(now.getTime() + Math.ceil(fastestLeft * 60) * 1000)
-    const calculationResult: CalculationResult = { matureLeft, waterLeftInput, elapsedSinceLastWater, currentWaterReduce, matureAfterWater, fastestLeft, fastestEta }
-    void calculationInput
-    void calculationResult
 
-    result.value = `当前按【${crop.name}】计算（成熟时间输入：${TIME_MODE_LABELS[timeMode.value]}）\n\n距上次浇水：${formatMinutes(elapsedSinceLastWater)}\n本次可减少：${formatMinutes(currentWaterReduce)}\n浇水后剩余：${formatMinutes(matureAfterWater)}\n\n理论最快还需：${formatMinutes(fastestLeft)}\n预计最快成熟时间：\n${formatDateTime(fastestEta)}`
+    calculationResult.value = {
+      cropName: crop.name,
+      timeModeLabel: TIME_MODE_LABELS[timeMode.value],
+      matureLeft,
+      waterLeftInput,
+      elapsedSinceLastWater,
+      currentWaterReduce,
+      matureAfterWater,
+      fastestLeft,
+      savedMinutes,
+      fastestEta,
+    }
   } catch (exception: unknown) {
+    calculationResult.value = null
     error.value = exception instanceof Error ? exception.message : '计算失败，请检查输入。'
   }
 }
@@ -334,7 +343,8 @@ function clearInputs(): void {
   backspacePressTimes.value = []
   lastAutoCalculatedWaterMinute.value = ''
   error.value = ''
-  result.value = '请输入数据后点击计算。\n\n也可以在最后一个输入框按回车计算。'
+  calculationResult.value = null
+  resultHint.value = initialResultHint
   nextTick(() => matureHourInput.value?.focus())
 }
 
@@ -543,12 +553,49 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
           <p class="reference">{{ referenceText }}</p>
         </form>
 
-        <section class="result-card" aria-label="计算结果">
+        <section class="result-card" aria-label="计算结果" aria-live="polite">
           <div class="result-heading">
             <span>结果</span>
-            <span v-if="error" class="error-inline">{{ error }}</span>
+            <span v-if="error" class="error-inline">计算失败</span>
           </div>
-          <pre>{{ error || result }}</pre>
+
+          <div v-if="error" class="result-scroll result-message error-message">{{ error }}</div>
+
+          <div v-else-if="calculationResult" class="result-scroll result-content">
+            <p class="result-snapshot">{{ calculationResult.cropName }} · {{ calculationResult.timeModeLabel }}</p>
+
+            <dl class="result-details">
+              <div>
+                <dt>距上次浇水</dt>
+                <dd>{{ formatMinutes(calculationResult.elapsedSinceLastWater) }}</dd>
+              </div>
+              <div>
+                <dt>本次可减少</dt>
+                <dd>{{ formatMinutes(calculationResult.currentWaterReduce) }}</dd>
+              </div>
+              <div>
+                <dt>浇水后剩余</dt>
+                <dd>{{ formatMinutes(calculationResult.matureAfterWater) }}</dd>
+              </div>
+              <div>
+                <dt>理论最快还需</dt>
+                <dd>{{ formatMinutes(calculationResult.fastestLeft) }}</dd>
+              </div>
+            </dl>
+
+            <section class="saved-card" aria-label="理论总计可节省">
+              <span>理论总计可节省</span>
+              <strong>{{ formatMinutes(calculationResult.savedMinutes) }}</strong>
+              <small>相较于当前原始成熟剩余时间，已包含本次浇水减少与后续理论加速收益。</small>
+            </section>
+
+            <section class="eta-card" aria-label="预计最快成熟时间">
+              <span>预计最快成熟时间</span>
+              <time :datetime="calculationResult.fastestEta.toISOString()">{{ formatDateTime(calculationResult.fastestEta) }}</time>
+            </section>
+          </div>
+
+          <pre v-else class="result-scroll result-placeholder">{{ resultHint }}</pre>
         </section>
       </div>
     </main>
