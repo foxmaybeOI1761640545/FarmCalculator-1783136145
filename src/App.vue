@@ -27,6 +27,11 @@ interface CalculationResult {
   fastestEta: Date
 }
 
+interface AutoAdvanceDecision {
+  shouldAdvance: boolean
+  resolvedDay?: ClockDay
+}
+
 type InputRef = Ref<HTMLInputElement | null>
 type MaybeInputRef = InputRef | HTMLInputElement | null
 type NumericInputEvent = Event
@@ -209,18 +214,39 @@ function clockMatureLeftForCandidate(now: Date, crop: CropConfig, hour: number, 
   return clockDeltaMinutes(now, todayTime > now ? todayTime : tomorrowTime)
 }
 
-function validClockHourValues(now: Date, crop: CropConfig, day: ClockDay): number[] {
+function minuteDecisionValue(): number | null | undefined {
+  const text = matureMinute.value.trim()
+  if (text === '') return undefined
+  if (!/^\d+$/.test(text)) return null
+  const minute = Number(text)
+  return minute >= 0 && minute <= 59 ? minute : null
+}
+
+function clockHourHasValidMinute(now: Date, crop: CropConfig, hour: number, day: ClockDay, minute: number | null | undefined): boolean {
+  if (hour < 0 || hour > 23 || !Number.isInteger(hour)) return false
+  if (minute === null) return false
+  if (minute !== undefined) {
+    const matureLeft = clockMatureLeftForCandidate(now, crop, hour, minute, day)
+    return matureLeft > 0 && matureLeft <= crop.baseMinutes
+  }
+
+  for (let candidateMinute = 0; candidateMinute <= 59; candidateMinute += 1) {
+    const matureLeft = clockMatureLeftForCandidate(now, crop, hour, candidateMinute, day)
+    if (matureLeft > 0 && matureLeft <= crop.baseMinutes) return true
+  }
+  return false
+}
+
+function validClockHourValues(now: Date, crop: CropConfig, day: ClockDay, minute: number | null | undefined = undefined): number[] {
   const values = new Set<number>()
   for (let hour = 0; hour <= 23; hour += 1) {
-    for (let minute = 0; minute <= 59; minute += 1) {
-      const matureLeft = clockMatureLeftForCandidate(now, crop, hour, minute, day)
-      if (matureLeft > 0 && matureLeft <= crop.baseMinutes) {
-        values.add(hour)
-        break
-      }
-    }
+    if (clockHourHasValidMinute(now, crop, hour, day, minute)) values.add(hour)
   }
   return [...values].sort((left, right) => left - right)
+}
+
+function mergeUniqueHours(...hourLists: number[][]): number[] {
+  return [...new Set(hourLists.flat())].sort((left, right) => left - right)
 }
 
 function hasLongerHourWithPrefix(prefix: string, allowedHours: number[]): boolean {
@@ -230,24 +256,44 @@ function hasLongerHourWithPrefix(prefix: string, allowedHours: number[]): boolea
   })
 }
 
-function isMatureHourCompleteForAutoAdvance(value: string, now = new Date()): boolean {
-  if (!autoAdvanceEnabled.value || value === '' || !/^\d+$/.test(value)) return false
+function decideManualDayClockHourAutoAdvance(value: string, now: Date): AutoAdvanceDecision {
   const numericValue = Number(value)
-  if (!Number.isInteger(numericValue)) return false
-  if (!isClockMode.value) {
-    if (numericValue < 0 || numericValue > matureHourMax.value) return false
-    return !hasLongerHourWithPrefix(value, Array.from({ length: Math.floor(matureHourMax.value) + 1 }, (_, index) => index))
-  }
+  const crop = currentCrop.value
+  const minute = minuteDecisionValue()
+  const todayHours = validClockHourValues(now, crop, CLOCK_DAY_TODAY, minute)
+  const tomorrowHours = validClockHourValues(now, crop, CLOCK_DAY_TOMORROW, minute)
+  const allHours = mergeUniqueHours(todayHours, tomorrowHours)
+  const todayValid = todayHours.includes(numericValue)
+  const tomorrowValid = tomorrowHours.includes(numericValue)
 
-  const allowedHours = validClockHourValues(now, currentCrop.value, needsManualDay.value ? clockDay.value : clockAutoDay.value as ClockDay)
-  if (!allowedHours.includes(numericValue)) return false
-  return !hasLongerHourWithPrefix(value, allowedHours)
+  if (!todayValid && !tomorrowValid) return { shouldAdvance: false }
+  if (hasLongerHourWithPrefix(value, allHours)) return { shouldAdvance: false }
+  if (todayValid && !tomorrowValid) return { shouldAdvance: true, resolvedDay: CLOCK_DAY_TODAY }
+  if (!todayValid && tomorrowValid) return { shouldAdvance: true, resolvedDay: CLOCK_DAY_TOMORROW }
+  return { shouldAdvance: true }
 }
 
-function shouldAutoAdvance(value: string, maxValue: number, input: HTMLInputElement): boolean {
-  if (!autoAdvanceEnabled.value || value === '') return false
-  if (input === matureHourInput.value) return isMatureHourCompleteForAutoAdvance(value)
-  return Number(value) <= maxValue && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue)
+function decideMatureHourAutoAdvance(value: string, now = new Date()): AutoAdvanceDecision {
+  if (!autoAdvanceEnabled.value || value === '' || !/^\d+$/.test(value)) return { shouldAdvance: false }
+  const numericValue = Number(value)
+  if (!Number.isInteger(numericValue)) return { shouldAdvance: false }
+  if (!isClockMode.value) {
+    if (numericValue < 0 || numericValue > matureHourMax.value) return { shouldAdvance: false }
+    return { shouldAdvance: !hasLongerHourWithPrefix(value, Array.from({ length: Math.floor(matureHourMax.value) + 1 }, (_, index) => index)) }
+  }
+
+  if (needsManualDay.value) return decideManualDayClockHourAutoAdvance(value, now)
+
+  const minute = minuteDecisionValue()
+  const allowedHours = validClockHourValues(now, currentCrop.value, clockAutoDay.value as ClockDay, minute)
+  if (!allowedHours.includes(numericValue)) return { shouldAdvance: false }
+  return { shouldAdvance: !hasLongerHourWithPrefix(value, allowedHours) }
+}
+
+function decideAutoAdvance(value: string, maxValue: number, input: HTMLInputElement, now = new Date()): AutoAdvanceDecision {
+  if (!autoAdvanceEnabled.value || value === '') return { shouldAdvance: false }
+  if (input === matureHourInput.value) return decideMatureHourAutoAdvance(value, now)
+  return { shouldAdvance: Number(value) <= maxValue && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue) }
 }
 
 function calculate(): void {
@@ -382,7 +428,13 @@ function setInputModel(input: HTMLInputElement, value: string): void {
 
 function advanceIfInputIsComplete(input: HTMLInputElement, maxValue: number, nextRef: MaybeInputRef): void {
   const nextInput = resolveInputElement(nextRef)
-  if (!nextInput || !shouldAutoAdvance(input.value.trim(), maxValue, input)) return
+  if (!nextInput) return
+  const decision = decideAutoAdvance(input.value.trim(), maxValue, input)
+  if (!decision.shouldAdvance) return
+  if (input === matureHourInput.value && decision.resolvedDay && decision.resolvedDay !== clockDay.value) {
+    clockDay.value = decision.resolvedDay
+    clearError()
+  }
   scheduleFocusInput(nextInput)
 }
 
