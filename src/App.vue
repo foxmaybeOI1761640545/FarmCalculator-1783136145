@@ -195,6 +195,61 @@ function clockDeltaMinutes(now: Date, target: Date): number {
   return Math.ceil(Math.max(0, target.getTime() - now.getTime()) / 60000)
 }
 
+function clockMatureLeftForCandidate(now: Date, crop: CropConfig, hour: number, minute: number, day: ClockDay): number {
+  const todayTime = new Date(now)
+  todayTime.setHours(hour, minute, 0, 0)
+  if (crop.baseMinutes >= 32 * 60) {
+    if (day === CLOCK_DAY_TODAY) return todayTime > now ? clockDeltaMinutes(now, todayTime) : -1
+    const tomorrowTime = new Date(todayTime)
+    tomorrowTime.setDate(tomorrowTime.getDate() + 1)
+    return clockDeltaMinutes(now, tomorrowTime)
+  }
+  const tomorrowTime = new Date(todayTime)
+  tomorrowTime.setDate(tomorrowTime.getDate() + 1)
+  return clockDeltaMinutes(now, todayTime > now ? todayTime : tomorrowTime)
+}
+
+function validClockHourValues(now: Date, crop: CropConfig, day: ClockDay): number[] {
+  const values = new Set<number>()
+  for (let hour = 0; hour <= 23; hour += 1) {
+    for (let minute = 0; minute <= 59; minute += 1) {
+      const matureLeft = clockMatureLeftForCandidate(now, crop, hour, minute, day)
+      if (matureLeft > 0 && matureLeft <= crop.baseMinutes) {
+        values.add(hour)
+        break
+      }
+    }
+  }
+  return [...values].sort((left, right) => left - right)
+}
+
+function hasLongerHourWithPrefix(prefix: string, allowedHours: number[]): boolean {
+  return allowedHours.some((hour) => {
+    const text = String(hour)
+    return text.length > prefix.length && text.startsWith(prefix)
+  })
+}
+
+function isMatureHourCompleteForAutoAdvance(value: string, now = new Date()): boolean {
+  if (!autoAdvanceEnabled.value || value === '' || !/^\d+$/.test(value)) return false
+  const numericValue = Number(value)
+  if (!Number.isInteger(numericValue)) return false
+  if (!isClockMode.value) {
+    if (numericValue < 0 || numericValue > matureHourMax.value) return false
+    return !hasLongerHourWithPrefix(value, Array.from({ length: Math.floor(matureHourMax.value) + 1 }, (_, index) => index))
+  }
+
+  const allowedHours = validClockHourValues(now, currentCrop.value, needsManualDay.value ? clockDay.value : clockAutoDay.value as ClockDay)
+  if (!allowedHours.includes(numericValue)) return false
+  return !hasLongerHourWithPrefix(value, allowedHours)
+}
+
+function shouldAutoAdvance(value: string, maxValue: number, input: HTMLInputElement): boolean {
+  if (!autoAdvanceEnabled.value || value === '') return false
+  if (input === matureHourInput.value) return isMatureHourCompleteForAutoAdvance(value)
+  return Number(value) <= maxValue && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue)
+}
+
 function calculate(): void {
   try {
     clearError()
@@ -325,35 +380,32 @@ function setInputModel(input: HTMLInputElement, value: string): void {
   if (input === waterMinuteInput.value) waterMinute.value = value
 }
 
-function shouldAutoAdvance(value: string, maxValue: number): boolean {
-  return autoAdvanceEnabled.value && value !== '' && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue)
-}
-
 function advanceIfInputIsComplete(input: HTMLInputElement, maxValue: number, nextRef: MaybeInputRef): void {
   const nextInput = resolveInputElement(nextRef)
-  if (!nextInput || !shouldAutoAdvance(input.value.trim(), maxValue)) return
+  if (!nextInput || !shouldAutoAdvance(input.value.trim(), maxValue, input)) return
   scheduleFocusInput(nextInput)
 }
 
 function sanitizeNumber(event: NumericInputEvent, maxValue: number, nextRef: MaybeInputRef = null, autoCalculateOnTwoDigitMinute = false): void {
   if (!isHtmlInputElement(event.target)) return
   const cleaned = event.target.value.replace(/\D/g, '')
+  const isOverMax = cleaned !== '' && Number(cleaned) > maxValue
   const normalized = cleaned === '' ? '' : String(Math.min(Number(cleaned), maxValue))
   setInputModel(event.target, normalized)
   event.target.value = normalized
 
   if (autoCalculateOnTwoDigitMinute) {
-    maybeAutoCalculateFromWaterMinute(normalized)
+    maybeAutoCalculateFromWaterMinute(cleaned, isOverMax)
     return
   }
   advanceIfInputIsComplete(event.target, maxValue, nextRef)
 }
 
-function maybeAutoCalculateFromWaterMinute(value: string): void {
-  if (!autoAdvanceEnabled.value) return
-  if (!/^\d{2}$/.test(value) || Number(value) > 59) return
-  if (value === lastAutoCalculatedWaterMinute.value) return
-  lastAutoCalculatedWaterMinute.value = value
+function maybeAutoCalculateFromWaterMinute(rawValue: string, isOverMax: boolean): void {
+  if (!autoAdvanceEnabled.value || isOverMax) return
+  if (!/^\d{2}$/.test(rawValue) || Number(rawValue) > 59) return
+  if (rawValue === lastAutoCalculatedWaterMinute.value) return
+  lastAutoCalculatedWaterMinute.value = rawValue
   calculate()
 }
 
@@ -407,15 +459,17 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
               <span class="mode-thumb" :class="{ right: isClockMode }" aria-hidden="true"></span>
             </div>
 
-            <div v-if="needsManualDay" class="day-switch" role="group" aria-label="成熟日期">
-              <button type="button" :class="{ active: clockDay === CLOCK_DAY_TODAY }" @click="setClockDay(CLOCK_DAY_TODAY)">今日</button>
-              <button type="button" :class="{ active: clockDay === CLOCK_DAY_TOMORROW }" @click="setClockDay(CLOCK_DAY_TOMORROW)">明日</button>
+            <div class="mode-extra">
+              <div v-if="needsManualDay" class="day-switch" role="group" aria-label="成熟日期">
+                <button type="button" :class="{ active: clockDay === CLOCK_DAY_TODAY }" @click="setClockDay(CLOCK_DAY_TODAY)">今日</button>
+                <button type="button" :class="{ active: clockDay === CLOCK_DAY_TOMORROW }" @click="setClockDay(CLOCK_DAY_TOMORROW)">明日</button>
+              </div>
+              <span v-else-if="isClockMode" class="auto-day">{{ clockAutoDay }}</span>
             </div>
-            <span v-else-if="isClockMode" class="auto-day">{{ clockAutoDay }}</span>
           </div>
 
           <div class="time-line">
-            <span class="row-label">{{ isClockMode ? '成熟时间' : '成熟剩余' }}</span>
+            <span class="row-label">{{ isClockMode ? '预计成熟时间' : '成熟剩余' }}</span>
             <div class="time-inputs">
               <input ref="matureHourInput" v-model="matureHour" class="time-input" inputmode="numeric" autocomplete="off" aria-label="成熟时间小时" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="handleInputEnter($event, matureMinuteInput)" @input="sanitizeNumber($event, matureHourMax, matureMinuteInput)" />
               <span class="unit-label">{{ isClockMode ? '点' : '小时' }}</span>
@@ -425,7 +479,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
           </div>
 
           <div class="time-line">
-            <span class="row-label">水分剩余</span>
+            <span class="row-label">当前水分还能维持</span>
             <div class="time-inputs">
               <input ref="waterHourInput" v-model="waterHour" class="time-input" inputmode="numeric" autocomplete="off" aria-label="水分剩余小时" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="handleInputEnter($event, waterMinuteInput)" @input="sanitizeNumber($event, waterHourMax, waterMinuteInput)" />
               <span class="unit-label">小时</span>

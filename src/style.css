@@ -62,17 +62,21 @@ button:active { transform: translateY(1px); }
 .app-main {
   min-width: 0;
   min-height: 0;
+  max-width: 100%;
   overflow: hidden;
 }
 .page-shell {
   width: min(100% - 18px, 576px);
+  max-width: 100%;
   height: 100%;
+  min-width: 0;
   min-height: 0;
   margin: 0 auto;
   padding: 8px 0;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 8px;
+  overflow: hidden;
 }
 .notice-card {
   margin: 0;
@@ -88,6 +92,8 @@ button:active { transform: translateY(1px); }
 .calculator-card,
 .result-card {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid rgba(46, 113, 73, .14);
   border-radius: 16px;
   background: rgba(255,255,255,.92);
@@ -100,13 +106,15 @@ button:active { transform: translateY(1px); }
 }
 .mode-line {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 176px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
 .mode-switch {
   position: relative;
   display: grid;
+  width: 176px;
+  max-width: 176px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   min-height: 38px;
   padding: 3px;
@@ -135,6 +143,13 @@ button:active { transform: translateY(1px); }
   transition: transform .2s ease;
 }
 .mode-thumb.right { transform: translateX(100%); }
+.mode-extra {
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
 .day-switch {
   display: inline-grid;
   grid-template-columns: repeat(2, 1fr);
@@ -169,7 +184,7 @@ button:active { transform: translateY(1px); }
 }
 .time-line {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 122px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
@@ -181,10 +196,10 @@ button:active { transform: translateY(1px); }
 }
 .time-inputs {
   min-width: 0;
+  max-width: 100%;
   display: grid;
-  grid-template-columns: minmax(44px, 64px) auto minmax(44px, 64px) auto;
+  grid-template-columns: 58px 30px 58px minmax(28px, 1fr);
   align-items: center;
-  justify-content: start;
   gap: 5px;
 }
 .time-input {
@@ -219,12 +234,16 @@ button:active { transform: translateY(1px); }
   line-height: 1.45;
 }
 .result-card {
+  min-width: 0;
+  max-width: 100%;
   min-height: 0;
   padding: 10px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
 }
 .result-heading {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -243,14 +262,18 @@ button:active { transform: translateY(1px); }
   font-weight: 800;
 }
 .result-card pre {
+  min-width: 0;
+  max-width: 100%;
   min-height: 0;
   margin: 0;
   padding: 10px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   border-radius: 12px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
   line-height: 1.55;
   color: #1f432e;
@@ -385,10 +408,10 @@ button:active { transform: translateY(1px); }
 @media (max-width: 380px) {
   .page-shell { width: calc(100% - 14px); gap: 6px; padding: 6px 0; }
   .calculator-card, .result-card { border-radius: 14px; padding: 8px; }
-  .mode-line { gap: 6px; }
-  .time-line { grid-template-columns: 66px minmax(0, 1fr); gap: 6px; }
+  .mode-line { grid-template-columns: 176px minmax(0, 1fr); gap: 6px; }
+  .time-line { grid-template-columns: 1fr; align-items: start; gap: 4px; }
   .row-label { font-size: 13px; }
-  .time-inputs { grid-template-columns: minmax(40px, 56px) auto minmax(40px, 56px) auto; gap: 4px; }
+  .time-inputs { grid-template-columns: 54px 28px 54px minmax(26px, 1fr); gap: 4px; }
   .unit-label { font-size: 12px; }
   .app-footer { gap: 6px; padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
   .footer-button { font-size: 14px; padding-left: 4px; padding-right: 4px; }
