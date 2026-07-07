@@ -4,7 +4,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from
 
 type TimeMode = 'countdown' | 'clock'
 type ClockDay = '今日' | '明日'
-type DialogName = 'crop' | 'settings'
+type DialogName = 'crop' | 'settings' | 'autoAdvanceHelp'
 
 interface CropConfig {
   name: string
@@ -74,6 +74,10 @@ const matureHourInput = ref<HTMLInputElement | null>(null)
 const matureMinuteInput = ref<HTMLInputElement | null>(null)
 const waterHourInput = ref<HTMLInputElement | null>(null)
 const waterMinuteInput = ref<HTMLInputElement | null>(null)
+const cropDialog = ref<HTMLElement | null>(null)
+const settingsDialog = ref<HTMLElement | null>(null)
+const autoAdvanceHelpDialog = ref<HTMLElement | null>(null)
+const autoAdvanceHelpButton = ref<HTMLButtonElement | null>(null)
 
 const currentCrop = computed(() => crops.find((crop) => crop.name === cropName.value) ?? crops[1])
 const cropButtonText = computed(() => currentCrop.value.name.replace('作物', ''))
@@ -372,11 +376,44 @@ function setCrop(crop: CropConfig): void {
 }
 
 function openDialog(dialogName: DialogName): void {
+  if (dialogName === 'autoAdvanceHelp' && activeDialog.value === 'settings') {
+    activeDialog.value = dialogName
+    focusActiveDialog()
+    return
+  }
   lastFocusedElement.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
   activeDialog.value = dialogName
+  focusActiveDialog()
+}
+
+function currentDialogElement(): HTMLElement | null {
+  if (activeDialog.value === 'crop') return cropDialog.value
+  if (activeDialog.value === 'settings') return settingsDialog.value
+  if (activeDialog.value === 'autoAdvanceHelp') return autoAdvanceHelpDialog.value
+  return null
+}
+
+function focusableDialogElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>('button, input, [href], [tabindex]:not([tabindex="-1"])'))
+    .filter((element) => !element.hasAttribute('disabled') && element.tabIndex !== -1)
+}
+
+function focusActiveDialog(): void {
+  nextTick(() => {
+    const dialog = currentDialogElement()
+    if (!dialog) return
+    const firstFocusable = focusableDialogElements(dialog)[0]
+    ;(firstFocusable ?? dialog).focus()
+  })
 }
 
 function closeDialog(): void {
+  if (activeDialog.value === 'autoAdvanceHelp') {
+    activeDialog.value = 'settings'
+    nextTick(() => autoAdvanceHelpButton.value?.focus())
+    return
+  }
+
   const focusTarget = lastFocusedElement.value
   activeDialog.value = null
   nextTick(() => {
@@ -384,10 +421,34 @@ function closeDialog(): void {
   })
 }
 
+function trapDialogFocus(event: KeyboardEvent): void {
+  const dialog = currentDialogElement()
+  if (!dialog) return
+  const focusableElements = focusableDialogElements(dialog)
+  if (focusableElements.length === 0) {
+    event.preventDefault()
+    dialog.focus()
+    return
+  }
+
+  const firstElement = focusableElements[0]
+  const lastElement = focusableElements[focusableElements.length - 1]
+  if (event.shiftKey && document.activeElement === firstElement) {
+    event.preventDefault()
+    lastElement.focus()
+  } else if (!event.shiftKey && document.activeElement === lastElement) {
+    event.preventDefault()
+    firstElement.focus()
+  }
+}
+
 function handleDialogKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape') return
-  event.preventDefault()
-  closeDialog()
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeDialog()
+    return
+  }
+  if (event.key === 'Tab') trapDialogFocus(event)
 }
 
 function isHtmlInputElement(value: EventTarget | HTMLInputElement | null): value is HTMLInputElement {
@@ -608,7 +669,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
 
     <teleport to="body">
       <div v-if="activeDialog === 'crop'" class="dialog-backdrop" role="presentation" @click.self="closeDialog" @keydown="handleDialogKeydown">
-        <section class="dialog-card crop-dialog" role="dialog" aria-modal="true" aria-labelledby="crop-dialog-title" tabindex="-1">
+        <section ref="cropDialog" class="dialog-card crop-dialog" role="dialog" aria-modal="true" aria-labelledby="crop-dialog-title" tabindex="-1">
           <div class="dialog-head">
             <h2 id="crop-dialog-title">选择作物</h2>
             <button class="close-button" type="button" aria-label="关闭作物选择" @click="closeDialog">×</button>
@@ -619,17 +680,53 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
         </section>
       </div>
 
+
+
+      <div v-if="activeDialog === 'autoAdvanceHelp'" class="dialog-backdrop" role="presentation" @click.self="closeDialog" @keydown="handleDialogKeydown">
+        <section ref="autoAdvanceHelpDialog" class="dialog-card help-dialog" role="dialog" aria-modal="true" aria-labelledby="auto-advance-help-title" tabindex="-1">
+          <div class="dialog-head">
+            <h2 id="auto-advance-help-title">自动跳转说明</h2>
+            <button class="close-button" type="button" aria-label="关闭自动跳转说明" @click="closeDialog">×</button>
+          </div>
+
+          <div class="help-body">
+            <p>开启时，输入被判定为完整且无需继续等待下一位后，会自动聚焦并全选下一输入框。</p>
+            <p>具体时间模式会结合当前时间、作物最大成熟时长及今日/明日的有效范围判断，不只是按固定两位数跳转。</p>
+            <p>最后一个“水分分钟”输入两位合法数字 <code>00–59</code> 后，只自动计算一次。</p>
+            <p>关闭时，数字输入不自动换焦点、不自动切换日期、不自动计算；按 Enter 前往下一项，最后一项 Enter 计算。</p>
+
+            <section class="help-example" aria-labelledby="countdown-help-title">
+              <h3 id="countdown-help-title">倒计时示例</h3>
+              <p>选择16小时作物，成熟剩余小时输入 <code>7</code>。因为不存在 <code>70–79</code> 这类有效小时，程序会把 <code>7</code> 视为完整值并跳到分钟；分钟输入 <code>30</code> 后继续跳到水分小时。</p>
+            </section>
+
+            <section class="help-example" aria-labelledby="clock-help-title">
+              <h3 id="clock-help-title">具体时间示例</h3>
+              <p>例如当前约12:00，选择32小时作物并输入成熟小时 <code>6</code>。今日06:xx已过去，而明日06:xx仍在未来32小时内，程序会自动选择“明日”并跳到分钟；若输入 <code>1</code> 且 <code>10–19</code> 中仍存在有效时间，则等待第二位。</p>
+            </section>
+          </div>
+
+          <button class="confirm-button" type="button" @click="closeDialog">知道了</button>
+        </section>
+      </div>
+
       <div v-if="activeDialog === 'settings'" class="dialog-backdrop" role="presentation" @click.self="closeDialog" @keydown="handleDialogKeydown">
-        <section class="dialog-card settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" tabindex="-1">
+        <section ref="settingsDialog" class="dialog-card settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" tabindex="-1">
           <div class="dialog-head">
             <h2 id="settings-dialog-title">设置</h2>
             <button class="close-button" type="button" aria-label="关闭设置" @click="closeDialog">×</button>
           </div>
-          <label class="switch-row">
-            <span>输入完整后自动跳到下一项</span>
-            <input v-model="autoAdvanceEnabled" class="sr-only" type="checkbox" />
-            <span class="switch-control" :class="{ active: autoAdvanceEnabled }" aria-hidden="true"></span>
-          </label>
+          <div class="switch-row">
+            <div class="setting-label-group">
+              <span>输入完整后自动跳到下一项</span>
+              <button ref="autoAdvanceHelpButton" class="help-button" type="button" aria-label="查看自动跳转说明" aria-haspopup="dialog" @click="openDialog('autoAdvanceHelp')">?</button>
+            </div>
+            <label class="switch-toggle">
+              <span class="sr-only">输入完整后自动跳到下一项</span>
+              <input v-model="autoAdvanceEnabled" class="sr-only" type="checkbox" />
+              <span class="switch-control" :class="{ active: autoAdvanceEnabled }" aria-hidden="true"></span>
+            </label>
+          </div>
         </section>
       </div>
     </teleport>
