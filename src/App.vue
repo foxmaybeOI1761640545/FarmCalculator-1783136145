@@ -386,6 +386,10 @@ function openDialog(dialogName: DialogName): void {
   focusActiveDialog()
 }
 
+function isDialogOpen(dialogName: DialogName): boolean {
+  return activeDialog.value === dialogName
+}
+
 function currentDialogElement(): HTMLElement | null {
   if (activeDialog.value === 'crop') return cropDialog.value
   if (activeDialog.value === 'settings') return settingsDialog.value
@@ -718,12 +722,14 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
           </div>
           <div class="switch-row">
             <div class="setting-label-group">
-              <span>输入完整后自动跳到下一项</span>
-              <button ref="autoAdvanceHelpButton" class="help-button" type="button" aria-label="查看自动跳转说明" aria-haspopup="dialog" @click="openDialog('autoAdvanceHelp')">?</button>
+              <span id="auto-advance-toggle-label" class="setting-label-text">输入完自动跳转到下一项</span>
+              <button ref="autoAdvanceHelpButton" class="help-button" type="button" aria-label="查看自动跳转说明" aria-haspopup="dialog" :aria-expanded="isDialogOpen('autoAdvanceHelp')" @click="openDialog('autoAdvanceHelp')">
+                <span class="help-button-glyph" aria-hidden="true">?</span>
+              </button>
             </div>
             <label class="switch-toggle">
-              <span class="sr-only">输入完整后自动跳到下一项</span>
-              <input v-model="autoAdvanceEnabled" class="sr-only" type="checkbox" />
+              <span class="sr-only">输入完自动跳转到下一项</span>
+              <input id="auto-advance-toggle" v-model="autoAdvanceEnabled" class="sr-only" type="checkbox" aria-labelledby="auto-advance-toggle-label" />
               <span class="switch-control" :class="{ active: autoAdvanceEnabled }" aria-hidden="true"></span>
             </label>
           </div>

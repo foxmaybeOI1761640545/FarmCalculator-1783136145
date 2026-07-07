@@ -443,9 +443,9 @@ button:active { transform: translateY(1px); }
 }
 .switch-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 52px;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   color: #294f3a;
   font-weight: 800;
 }
@@ -453,8 +453,12 @@ button:active { transform: translateY(1px); }
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  line-height: 1.45;
+  gap: 4px;
+  line-height: 1.35;
+}
+.setting-label-text {
+  white-space: nowrap;
+  font-size: 14px;
 }
 .help-button {
   flex: 0 0 44px;
@@ -467,8 +471,7 @@ button:active { transform: translateY(1px); }
   color: #17643b;
   background: transparent;
 }
-.help-button::before {
-  content: "?";
+.help-button-glyph {
   width: 24px;
   height: 24px;
   display: grid;
@@ -479,11 +482,12 @@ button:active { transform: translateY(1px); }
   box-shadow: 0 4px 10px rgba(47, 140, 84, .22);
   font-weight: 950;
 }
-.help-button:hover::before { background: linear-gradient(135deg, #277a48, #4ba95f); }
-.help-button:active::before { transform: scale(.94); }
+.help-button:hover .help-button-glyph { background: linear-gradient(135deg, #277a48, #4ba95f); }
+.help-button:active .help-button-glyph { transform: scale(.94); }
 .switch-toggle {
   display: inline-grid;
   place-items: center;
+  width: 52px;
   min-width: 52px;
   min-height: 44px;
 }
@@ -584,8 +588,6 @@ button:active { transform: translateY(1px); }
   .unit-label { font-size: 12px; }
   .app-footer { gap: 6px; padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
   .footer-button { font-size: 14px; padding-left: 4px; padding-right: 4px; }
-  .setting-label-group { align-items: flex-start; }
-  .help-button { margin-top: -8px; }
   .result-details { grid-template-columns: 1fr; }
   .eta-card time { font-size: 18px; }
 }
