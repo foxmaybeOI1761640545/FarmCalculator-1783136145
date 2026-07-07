@@ -101,6 +101,7 @@ const cropDialog = ref<HTMLElement | null>(null)
 const settingsDialog = ref<HTMLElement | null>(null)
 const autoAdvanceHelpDialog = ref<HTMLElement | null>(null)
 const autoAdvanceHelpButton = ref<HTMLButtonElement | null>(null)
+const resultScrollElement = ref<HTMLElement | null>(null)
 
 /** 当前作物配置；当 cropName 异常时回退到 16 小时作物，避免计算流程拿到 undefined。 */
 const currentCrop = computed(() => crops.find((crop) => crop.name === cropName.value) ?? crops[1])
@@ -136,6 +137,8 @@ const matureHourMax = computed(() => isClockMode.value ? 23 : currentCrop.value.
 const waterHourMax = computed(() => Math.floor(currentCrop.value.waterMaxMinutes / 60))
 
 let removeBackButtonListener: (() => void) | undefined
+let resultScrollFrameId: number | null = null
+let resultScrollTaskId = 0
 
 /**
  * 组件挂载后恢复本地偏好、注册 Android 返回键并聚焦首个输入框。
@@ -163,6 +166,11 @@ onMounted(() => {
 /** 组件卸载时移除 Capacitor 返回键监听，避免 WebView 生命周期重建后重复注册。 */
 onUnmounted(() => {
   removeBackButtonListener?.()
+  resultScrollTaskId += 1
+  if (resultScrollFrameId !== null) {
+    cancelAnimationFrame(resultScrollFrameId)
+    resultScrollFrameId = null
+  }
 })
 
 /** 时间模式变化后持久化到 localStorage，并重置错误与自动计算去重标记。 */
@@ -255,6 +263,32 @@ function formatMinutes(minutes: number): string {
 function formatDateTime(date: Date): string {
   const pad = (num: number): string => String(num).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/**
+ * 安排结果滚动容器定位到顶部或底部。
+ *
+ * 只读取当前互斥分支中最新的 .result-scroll DOM，不缓存旧节点；每次新任务都会取消旧的
+ * requestAnimationFrame，并用递增 token 忽略已经过期的 nextTick 回调，确保快速计算、错误和清空时以后发生的状态为准。
+ */
+function scheduleResultScroll(position: 'top' | 'bottom'): void {
+  resultScrollTaskId += 1
+  const taskId = resultScrollTaskId
+  if (resultScrollFrameId !== null) {
+    cancelAnimationFrame(resultScrollFrameId)
+    resultScrollFrameId = null
+  }
+
+  nextTick(() => {
+    if (taskId !== resultScrollTaskId) return
+    resultScrollFrameId = requestAnimationFrame(() => {
+      resultScrollFrameId = null
+      if (taskId !== resultScrollTaskId) return
+      const element = resultScrollElement.value
+      if (!element) return
+      element.scrollTop = position === 'bottom' ? element.scrollHeight : 0
+    })
+  })
 }
 
 /**
@@ -470,9 +504,11 @@ function calculate(): void {
       savedMinutes,
       fastestEta,
     }
+    scheduleResultScroll('bottom')
   } catch (exception: unknown) {
     calculationResult.value = null
     error.value = exception instanceof Error ? exception.message : '计算失败，请检查输入。'
+    scheduleResultScroll('top')
   }
 }
 
@@ -487,6 +523,7 @@ function clearInputs(): void {
   error.value = ''
   calculationResult.value = null
   resultHint.value = initialResultHint
+  scheduleResultScroll('top')
   nextTick(() => matureHourInput.value?.focus())
 }
 
@@ -814,9 +851,9 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
             <span v-if="error" class="error-inline">计算失败</span>
           </div>
 
-          <div v-if="error" class="result-scroll result-message error-message">{{ error }}</div>
+          <div v-if="error" ref="resultScrollElement" class="result-scroll result-message error-message">{{ error }}</div>
 
-          <div v-else-if="calculationResult" class="result-scroll result-content">
+          <div v-else-if="calculationResult" ref="resultScrollElement" class="result-scroll result-content">
             <p class="result-snapshot">{{ calculationResult.cropName }} · {{ calculationResult.timeModeLabel }}</p>
 
             <dl class="result-details">
@@ -850,7 +887,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
             </section>
           </div>
 
-          <pre v-else class="result-scroll result-placeholder">{{ resultHint }}</pre>
+          <pre v-else ref="resultScrollElement" class="result-scroll result-placeholder">{{ resultHint }}</pre>
         </section>
       </div>
     </main>

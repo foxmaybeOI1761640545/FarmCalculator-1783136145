@@ -275,6 +275,7 @@ button:active { transform: translateY(1px); }
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  scroll-behavior: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   overflow-wrap: anywhere;
