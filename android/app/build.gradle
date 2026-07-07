@@ -1,0 +1,73 @@
+// Android 应用模块构建脚本。
+//
+// 这里从 package.json 读取版本号，并按 X.0.Y 规则计算 versionCode；Release/Bundle
+// 任务会强制检查签名环境变量，避免在缺少密钥配置时生成不可发布的安装包。
+import groovy.json.JsonSlurper
+
+plugins { id 'com.android.application' }
+
+apply from: '../variables.gradle'
+
+// 版本来源：以 Web 项目的 package.json 为单一事实来源，避免 Android 与前端版本漂移。
+File packageJsonFile = file('../../package.json')
+def packageJson = new JsonSlurper().parseText(packageJsonFile.getText('UTF-8'))
+String appVersion = packageJson.version
+if (!(appVersion ==~ /^[0-9]+\.0\.[0-9]+$/)) {
+    throw new GradleException("package.json version must match X.0.Y, actual: ${appVersion}")
+}
+// versionCode 规则需与 scripts/verify-release-version.mjs 保持一致，且不能超过 Android int 上限。
+def versionParts = appVersion.tokenize('.').collect { it as int }
+int computedVersionCode = versionParts[0] * 1000000 + versionParts[2]
+if (computedVersionCode <= 0 || computedVersionCode > Integer.MAX_VALUE) {
+    throw new GradleException("Computed versionCode is out of Android int range: ${computedVersionCode}")
+}
+
+// 只有发布类任务需要签名变量；普通 debug 构建不要求本机持有 release 密钥。
+boolean releaseTaskRequested = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') || it.toLowerCase().contains('bundle') }
+def releaseSigningEnv = ['ANDROID_KEYSTORE_PATH', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD']
+if (releaseTaskRequested) {
+    def missing = releaseSigningEnv.findAll { !System.getenv(it) }
+    if (!missing.isEmpty()) throw new GradleException("Release signing environment variables are required: ${missing.join(', ')}")
+}
+
+// Android 配置：包名、SDK、版本和签名均集中在此处，业务逻辑仍在 Web 层实现。
+android {
+    namespace 'com.farmcalculator.app'
+    compileSdk rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        applicationId 'com.farmcalculator.app'
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode computedVersionCode
+        versionName appVersion
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    signingConfigs {
+        release {
+            if (releaseTaskRequested) {
+                storeFile file(System.getenv('ANDROID_KEYSTORE_PATH'))
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        debug { }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+}
+
+apply from: 'capacitor.build.gradle'

@@ -1,0 +1,268 @@
+name: Android Signed Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, work]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: farmcalculator-release-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  signed-release:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Calculate branch release version and tag
+        id: rel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+          release_commit="$(git rev-parse HEAD)"
+
+          branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          branch_slug="$(printf '%s' "$branch_name" \
+            | sed -E 's#[/[:space:]]+#-#g; s#[^A-Za-z0-9._-]+#-#g; s#-+#-#g; s#^-+##; s#-+$##')"
+          if [ -z "$branch_slug" ]; then
+            branch_slug="branch"
+          fi
+
+          max_patch=""
+          while IFS= read -r existing_tag; do
+            patch="${existing_tag##*-${branch_slug}-v1.0.}"
+            if [[ "$patch" =~ ^[0-9]+$ ]] && { [ -z "$max_patch" ] || [ "$patch" -gt "$max_patch" ]; }; then
+              max_patch="$patch"
+            fi
+          done < <(git tag --list "*-${branch_slug}-v1.0.*")
+          if [ -z "$max_patch" ]; then
+            next_patch=0
+          else
+            next_patch=$((max_patch + 1))
+          fi
+
+          version="1.0.${next_patch}"
+          timestamp="$(TZ=Asia/Singapore date +'%Y%m%d-%H%M%S')"
+          build_time="$(TZ=Asia/Singapore date +'%Y-%m-%d %H:%M:%S %Z')"
+          tag="${timestamp}-${branch_slug}-v${version}"
+          apk_name="FarmCalculator-${branch_slug}-v${version}.apk"
+          prerelease=true
+          if [ "$branch_name" = "main" ] || [ "$branch_name" = "master" ] || [ "$branch_name" = "work" ]; then
+            prerelease=false
+          fi
+
+          {
+            echo "branch_name=${branch_name}"
+            echo "branch_slug=${branch_slug}"
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "apk_name=${apk_name}"
+            echo "build_time=${build_time}"
+            echo "release_commit=${release_commit}"
+            echo "prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply release version without committing
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version "${{ steps.rel.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Verify release version
+        run: npm run verify:version
+        env:
+          RELEASE_TAG: v${{ steps.rel.outputs.version }}
+
+      - name: Build web assets and sync Android
+        run: npm run sync:android
+
+      - name: Restore fallback test keystore cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fallback-release.keystore
+          key: farmcalculator-fallback-release-keystore-v1
+
+      - name: Prepare release keystore
+        id: keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          fallback_path="${RUNNER_TEMP}/fallback-release.keystore"
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            keystore_path="${RUNNER_TEMP}/farm-calculator-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+            signing_mode="Repository keystore"
+          else
+            keystore_path="$fallback_path"
+            ANDROID_KEYSTORE_PASSWORD="fallback-release-password"
+            ANDROID_KEY_ALIAS="fallback-release-key"
+            ANDROID_KEY_PASSWORD="fallback-release-password"
+            if [ ! -f "$keystore_path" ]; then
+              keytool -genkeypair -v \
+                -keystore "$keystore_path" \
+                -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+                -alias "$ANDROID_KEY_ALIAS" \
+                -keypass "$ANDROID_KEY_PASSWORD" \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=FarmCalculator Fallback,O=FarmCalculator,C=SG"
+            fi
+            signing_mode="Fallback test keystore"
+          fi
+          {
+            echo "ANDROID_KEYSTORE_PATH=$keystore_path"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+          echo "signing_mode=${signing_mode}" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed Release APK
+        working-directory: android
+        run: gradle assembleRelease
+
+      - name: Verify signature and prepare release asset
+        id: files
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk_path="android/app/build/outputs/apk/release/app-release.apk"
+
+          if [ ! -f "$apk_path" ]; then
+            echo "::error::Signed Release APK was not found at $apk_path"
+            find android/app/build/outputs/apk -maxdepth 4 -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+
+          if [ -z "$sdk_root" ]; then
+            echo "::error::ANDROID_SDK_ROOT and ANDROID_HOME are both unavailable."
+            exit 1
+          fi
+
+          if [ ! -d "$sdk_root/build-tools" ]; then
+            echo "::error::Android Build Tools directory was not found at $sdk_root/build-tools."
+            find "$sdk_root" -maxdepth 3 -type d 2>/dev/null || true
+            exit 1
+          fi
+
+          apksigner_path="$(
+            find "$sdk_root/build-tools" \
+              -mindepth 2 \
+              -maxdepth 2 \
+              -type f \
+              -name apksigner \
+              -print 2>/dev/null |
+            sort -V |
+            tail -n 1
+          )"
+
+          if [ -z "$apksigner_path" ] || [ ! -x "$apksigner_path" ]; then
+            echo "::error::apksigner was not found under $sdk_root/build-tools."
+            find "$sdk_root/build-tools" -maxdepth 2 -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Using apksigner: $apksigner_path"
+
+          "$apksigner_path" verify \
+            --verbose \
+            --print-certs \
+            "$apk_path"
+
+          mkdir -p "${RUNNER_TEMP}/release-output"
+
+          release_apk="${RUNNER_TEMP}/release-output/${{ steps.rel.outputs.apk_name }}"
+
+          cp "$apk_path" "$release_apk"
+
+          if [ ! -f "$release_apk" ]; then
+            echo "::error::Failed to prepare Release APK at $release_apk"
+            exit 1
+          fi
+
+          echo "apk=$release_apk" >> "$GITHUB_OUTPUT"
+
+      - name: Create release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_path="${RUNNER_TEMP}/release-notes.md"
+          cat > "$notes_path" <<NOTES
+          Automated Android release for FarmCalculator.
+
+          - Branch: ${{ steps.rel.outputs.branch_name }}
+          - Branch slug: ${{ steps.rel.outputs.branch_slug }}
+          - Version: ${{ steps.rel.outputs.version }}
+          - Commit SHA: ${{ steps.rel.outputs.release_commit }}
+          - Tag: ${{ steps.rel.outputs.tag }}
+          - Build time: ${{ steps.rel.outputs.build_time }}
+          - APK filename: ${{ steps.rel.outputs.apk_name }}
+          - Signing mode: ${{ steps.keystore.outputs.signing_mode }}
+          NOTES
+          echo "path=${notes_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Git tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag "${{ steps.rel.outputs.tag }}" "${{ steps.rel.outputs.release_commit }}"
+          git push origin "${{ steps.rel.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          target_commitish: ${{ steps.rel.outputs.release_commit }}
+          name: FarmCalculator ${{ steps.rel.outputs.branch_slug }} v${{ steps.rel.outputs.version }}
+          body_path: ${{ steps.notes.outputs.path }}
+          prerelease: ${{ steps.rel.outputs.prerelease }}
+          make_latest: false
+          files: ${{ steps.files.outputs.apk }}
