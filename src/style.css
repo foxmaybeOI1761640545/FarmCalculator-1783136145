@@ -1,3 +1,4 @@
+/* 全局基础样式：锁定根节点尺寸，禁止 body 滚动，并统一移动端可点击控件的默认手感。 */
 :root {
   font-family: "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #193225;
@@ -26,6 +27,7 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 3
 @media (hover: hover) { button:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(35, 95, 63, .14); } }
 button:active { transform: translateY(1px); }
 
+/* App Shell：顶部栏、中间固定页面和底部操作栏使用 100dvh Grid，避免依赖 body 滚动。 */
 .app-shell {
   width: 100%;
   height: 100dvh;
@@ -35,6 +37,7 @@ button:active { transform: translateY(1px); }
   overflow: hidden;
   background: radial-gradient(circle at top left, #d8f0cf, transparent 24rem), linear-gradient(135deg, #f6fbf4 0%, #e3f3e8 100%);
 }
+/* 顶部标题栏：处理状态栏安全区，始终位于主内容滚动/裁剪区域之外。 */
 .app-header {
   z-index: 2;
   display: flex;
@@ -59,6 +62,7 @@ button:active { transform: translateY(1px); }
   color: #fff;
   background: rgba(255,255,255,.16);
 }
+/* 主内容视口：自身不滚动，内部 page-shell 决定输入区与结果区的固定页面布局。 */
 .app-main {
   min-width: 0;
   min-height: 0;
@@ -89,6 +93,7 @@ button:active { transform: translateY(1px); }
   line-height: 1.35;
   font-weight: 700;
 }
+/* 表单与结果卡片共用的视觉容器：限制宽度和溢出，防止手机窄屏横向撑开。 */
 .calculator-card,
 .result-card {
   min-width: 0;
@@ -104,6 +109,7 @@ button:active { transform: translateY(1px); }
   display: grid;
   gap: 8px;
 }
+/* 成熟时间模式区：左侧椭圆切换控件固定宽度，右侧日期/自动判断区域占剩余空间。 */
 .mode-line {
   display: grid;
   grid-template-columns: 176px minmax(0, 1fr);
@@ -182,6 +188,7 @@ button:active { transform: translateY(1px); }
   font-size: 13px;
   font-weight: 800;
 }
+/* 时间输入行：标题列与时/分输入列保持稳定，具体时间模式下两行输入可对齐。 */
 .time-line {
   display: grid;
   grid-template-columns: 122px minmax(0, 1fr);
@@ -233,6 +240,7 @@ button:active { transform: translateY(1px); }
   font-size: 12px;
   line-height: 1.45;
 }
+/* 结果区域：仅 result-scroll 允许纵向滚动，长错误和多行结果不能撑破固定 App Shell。 */
 .result-card {
   min-width: 0;
   max-width: 100%;
@@ -365,6 +373,7 @@ button:active { transform: translateY(1px); }
   font-weight: 950;
   overflow-wrap: anywhere;
 }
+/* 底部操作栏：清空、作物选择和计算按钮固定在 Main 外部，并处理底部安全区。 */
 .app-footer {
   z-index: 2;
   display: grid;
@@ -388,6 +397,7 @@ button:active { transform: translateY(1px); }
 .footer-button.secondary { color: #2d5a3f; background: #e7f2e9; }
 .footer-button.crop-button { color: #2d6545; background: #f0f8f1; border: 1px solid #cfe5d5; }
 .footer-button.primary { color: #fff; background: linear-gradient(135deg, #2f8c54, #58b86a); font-size: 16px; }
+/* 弹窗系统：遮罩覆盖 App Shell，弹窗内容自行滚动，Esc/返回键由组件统一关闭。 */
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -441,6 +451,7 @@ button:active { transform: translateY(1px); }
   background: linear-gradient(135deg, #2f8c54, #58b86a);
   border-color: transparent;
 }
+/* 设置行：左侧说明与帮助按钮为一组，右侧开关固定宽度，避免问号误触开关。 */
 .switch-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 52px;
@@ -460,6 +471,7 @@ button:active { transform: translateY(1px); }
   white-space: nowrap;
   font-size: 14px;
 }
+/* 帮助按钮：外层提供 44px 触控区，内部 glyph 负责显示单个圆形问号。 */
 .help-button {
   flex: 0 0 44px;
   width: 44px;
@@ -524,6 +536,7 @@ button:active { transform: translateY(1px); }
 }
 .switch-control.active { background: #43a15f; }
 .switch-control.active::after { transform: translateX(22px); }
+/* 自动跳转说明弹窗：正文较长时只在弹窗内部滚动，不推动页面或底栏。 */
 .help-dialog {
   width: min(380px, 100%);
   max-height: min(78dvh, 620px);
@@ -572,12 +585,14 @@ button:active { transform: translateY(1px); }
   background: linear-gradient(135deg, #2f8c54, #58b86a);
 }
 
+/* 宽屏适配：在保持移动优先的基础上，把输入和结果改为左右两列。 */
 @media (min-width: 760px) {
   .page-shell { width: min(100% - 28px, 920px); grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: auto minmax(0, 1fr); }
   .notice-card { grid-column: 1 / -1; }
   .calculator-card, .result-card { min-height: 0; }
 }
 
+/* 小屏适配：压缩间距和输入列宽，确保 320–360px 宽度下无横向溢出。 */
 @media (max-width: 380px) {
   .page-shell { width: calc(100% - 14px); gap: 6px; padding: 6px 0; }
   .calculator-card, .result-card { border-radius: 14px; padding: 8px; }

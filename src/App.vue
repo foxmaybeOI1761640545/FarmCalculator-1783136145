@@ -6,12 +6,21 @@ type TimeMode = 'countdown' | 'clock'
 type ClockDay = '今日' | '明日'
 type DialogName = 'crop' | 'settings' | 'autoAdvanceHelp'
 
+/**
+ * 作物配置。所有时间均以分钟为单位，供输入上限、参考文案和成熟公式共用。
+ */
 interface CropConfig {
   name: string
   baseMinutes: number
   waterMaxMinutes: number
 }
 
+/**
+ * 单次成功计算的快照。
+ *
+ * 作物名称和模式文案在计算时固化，避免用户随后切换作物或模式导致旧结果标题变化。
+ * 所有时间量字段均为分钟；fastestEta 保存实际 Date 以便模板同时生成可读文本和 datetime 属性。
+ */
 interface CalculationResult {
   cropName: string
   timeModeLabel: string
@@ -25,6 +34,12 @@ interface CalculationResult {
   fastestEta: Date
 }
 
+/**
+ * 自动跳转决策结果。
+ *
+ * shouldAdvance 表示当前输入是否已经是完整值；resolvedDay 仅用于 32 小时具体时间模式，
+ * 当今日/明日只有一个日期可行时由输入流程应用，避免在 computed/watch 中产生副作用。
+ */
 interface AutoAdvanceDecision {
   shouldAdvance: boolean
   resolvedDay?: ClockDay
@@ -35,6 +50,7 @@ type MaybeInputRef = InputRef | HTMLInputElement | null
 type NumericInputEvent = Event
 type NumericKeyboardEvent = KeyboardEvent
 
+/** 时间模式、日期选项和 localStorage 键。字符串值会持久化，修改会影响旧用户配置兼容性。 */
 const TIME_MODE_COUNTDOWN: TimeMode = 'countdown'
 const TIME_MODE_CLOCK: TimeMode = 'clock'
 const TIME_MODE_LABELS: Record<TimeMode, string> = {
@@ -48,12 +64,19 @@ const AUTO_ADVANCE_STORAGE_KEY = 'farm-calculator-auto-advance'
 const BACKSPACE_CLEAR_PRESS_COUNT = 3
 const BACKSPACE_CLEAR_WINDOW_MS = 800
 
+/** 三种农场作物的固定业务参数。baseMinutes 是基础成熟时长，waterMaxMinutes 是水分最长维持时长。 */
 const crops: CropConfig[] = [
   { name: '8小时作物', baseMinutes: 8 * 60, waterMaxMinutes: 2 * 60 + 40 },
   { name: '16小时作物', baseMinutes: 16 * 60, waterMaxMinutes: 5 * 60 + 20 },
   { name: '32小时作物', baseMinutes: 32 * 60, waterMaxMinutes: 10 * 60 + 40 },
 ]
 
+/**
+ * 页面核心响应式状态。
+ *
+ * 输入框状态均保存为字符串，便于区分空字符串、用户正在输入的前缀和已完成数字；
+ * 解析与校验集中在 read* 函数和 sanitizeNumber 中。
+ */
 const cropName = ref<string>('16小时作物')
 const timeMode = ref<TimeMode>(TIME_MODE_COUNTDOWN)
 const clockDay = ref<ClockDay>(CLOCK_DAY_TODAY)
@@ -79,10 +102,19 @@ const settingsDialog = ref<HTMLElement | null>(null)
 const autoAdvanceHelpDialog = ref<HTMLElement | null>(null)
 const autoAdvanceHelpButton = ref<HTMLButtonElement | null>(null)
 
+/** 当前作物配置；当 cropName 异常时回退到 16 小时作物，避免计算流程拿到 undefined。 */
 const currentCrop = computed(() => crops.find((crop) => crop.name === cropName.value) ?? crops[1])
+/** 底部作物按钮显示的短文案，去掉“作物”以节省移动端底栏宽度。 */
 const cropButtonText = computed(() => currentCrop.value.name.replace('作物', ''))
+/** 是否处于具体时间模式；多个日期判断和输入单位显示依赖该布尔值。 */
 const isClockMode = computed(() => timeMode.value === TIME_MODE_CLOCK)
+/** 32 小时作物在具体时间模式下可能跨两天，必须由用户或自动跳转决策明确今日/明日。 */
 const needsManualDay = computed(() => isClockMode.value && currentCrop.value.baseMinutes >= 32 * 60)
+/**
+ * 8/16 小时具体时间模式的自动日期提示。
+ *
+ * 该 computed 只负责展示推断，不写入 clockDay；输入不完整或越界时返回 “--”。
+ */
 const clockAutoDay = computed(() => {
   if (!isClockMode.value || needsManualDay.value) return '--'
   const hour = toOptionalInteger(matureHour.value)
@@ -93,15 +125,23 @@ const clockAutoDay = computed(() => {
   todayTime.setHours(hour, minute, 0, 0)
   return todayTime > now ? CLOCK_DAY_TODAY : CLOCK_DAY_TOMORROW
 })
+/** 根据当前作物生成参考说明，帮助用户核对基础成熟、水分维持和理论最快时长。 */
 const referenceText = computed(() => {
   const crop = currentCrop.value
   return `基础成熟 ${formatMinutes(crop.baseMinutes)}；水分最大维持 ${formatMinutes(crop.waterMaxMinutes)}；满额浇水减少 ${formatMinutes(crop.waterMaxMinutes / 4)}；理论最快 ${formatMinutes((crop.baseMinutes - crop.waterMaxMinutes / 4) * 4 / 5)}。`
 })
+/** 成熟小时输入上限：具体时间固定 23，倒计时跟随当前作物基础小时数。 */
 const matureHourMax = computed(() => isClockMode.value ? 23 : currentCrop.value.baseMinutes / 60)
+/** 水分小时输入上限，等于当前作物最大水分维持分钟数向下取整为小时。 */
 const waterHourMax = computed(() => Math.floor(currentCrop.value.waterMaxMinutes / 60))
 
 let removeBackButtonListener: (() => void) | undefined
 
+/**
+ * 组件挂载后恢复本地偏好、注册 Android 返回键并聚焦首个输入框。
+ *
+ * Capacitor backButton 与 Esc/遮罩共用 closeDialog，保证弹窗关闭顺序一致。
+ */
 onMounted(() => {
   const savedMode = localStorage.getItem(STORAGE_KEY)
   if (savedMode === TIME_MODE_COUNTDOWN || savedMode === TIME_MODE_CLOCK) timeMode.value = savedMode
@@ -120,10 +160,12 @@ onMounted(() => {
   nextTick(() => matureHourInput.value?.focus())
 })
 
+/** 组件卸载时移除 Capacitor 返回键监听，避免 WebView 生命周期重建后重复注册。 */
 onUnmounted(() => {
   removeBackButtonListener?.()
 })
 
+/** 时间模式变化后持久化到 localStorage，并重置错误与自动计算去重标记。 */
 watch(timeMode, (mode) => {
   localStorage.setItem(STORAGE_KEY, mode)
   clearError()
@@ -131,15 +173,24 @@ watch(timeMode, (mode) => {
   nextTick(() => matureHourInput.value?.focus())
 })
 
+/** 自动跳转设置变化后立即写入 localStorage；同时清除最后一分钟自动计算去重状态。 */
 watch(autoAdvanceEnabled, (enabled) => {
   localStorage.setItem(AUTO_ADVANCE_STORAGE_KEY, String(enabled))
   lastAutoCalculatedWaterMinute.value = ''
 })
 
+/** 水分分钟被用户改成新值后允许下一次两位合法分钟再次触发自动计算。 */
 watch(waterMinute, (value) => {
   if (value !== lastAutoCalculatedWaterMinute.value) lastAutoCalculatedWaterMinute.value = ''
 })
 
+/**
+ * 将可选数字字符串解析为整数。
+ *
+ * 空字符串在日期预览中按 0 处理；非数字返回 null，让调用方显示未知状态而不是抛错。
+ * @param value 输入框字符串。
+ * @returns 解析后的整数，或表示非法数字的 null。
+ */
 function toOptionalInteger(value: string): number | null {
   const text = String(value ?? '').trim()
   if (text === '') return 0
@@ -147,6 +198,14 @@ function toOptionalInteger(value: string): number | null {
   return Number(text)
 }
 
+/**
+ * 从输入字符串读取非负整数。
+ *
+ * 空字符串按 0 处理，这是为了允许用户只填写小时或分钟的一部分；非数字会抛出面向用户的错误。
+ * @param value 输入框字符串。
+ * @param fieldName 错误消息中展示的字段名。
+ * @throws 当 value 不是空字符串且不是纯数字时抛出 Error。
+ */
 function readNonNegativeInt(value: string, fieldName: string): number {
   const text = String(value ?? '').trim()
   if (text === '') return 0
@@ -154,17 +213,31 @@ function readNonNegativeInt(value: string, fieldName: string): number {
   return Number(text)
 }
 
+/**
+ * 读取分钟字段并限制在 0–59。
+ * @throws 当分钟大于等于 60 或包含非数字字符时抛出 Error。
+ */
 function readMinute(value: string, fieldName: string): number {
   const minute = readNonNegativeInt(value, fieldName)
   if (minute >= 60) throw new Error(`${fieldName} 必须在 0-59 之间。`)
   return minute
 }
 
+/**
+ * 将正数向上取整，非正数统一归零。
+ *
+ * 用于分钟/秒展示，避免小数分钟在显示时被向下取整导致低估剩余时间。
+ */
 function ceilPositive(value: number): number {
   if (value <= 0) return 0
   return Math.ceil(value)
 }
 
+/**
+ * 将分钟数格式化为中文时长。
+ *
+ * 输入单位是分钟，可为小数；内部转换为秒并向上取整，保证理论计算中的分数分钟仍完整展示。
+ */
 function formatMinutes(minutes: number): string {
   const totalSeconds = ceilPositive(minutes * 60)
   if (totalSeconds <= 0) return '0分钟'
@@ -174,11 +247,24 @@ function formatMinutes(minutes: number): string {
   return [hours ? `${hours}小时` : '', mins ? `${mins}分钟` : '', secs ? `${secs}秒` : ''].join('')
 }
 
+/**
+ * 将 Date 格式化为 yyyy-MM-dd HH:mm:ss。
+ *
+ * 展示精度保持到秒，和 fastestEta 的秒级取整策略一致。
+ */
 function formatDateTime(date: Date): string {
   const pad = (num: number): string => String(num).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
+/**
+ * 根据当前输入模式读取“当前距离成熟还剩多少分钟”。
+ *
+ * 倒计时模式直接读取小时/分钟；具体时间模式根据当前日期、自动今日/明日逻辑或 32 小时作物的手动日期计算差值。
+ * @param now 同一次计算的时间基准，避免跨秒/跨分钟重复创建 Date 导致结果不一致。
+ * @param crop 当前作物配置，用于 32 小时日期规则和上限错误提示。
+ * @throws 当具体时间已过去、小时越界或输入非数字时抛出 Error，由 calculate 捕获展示。
+ */
 function readMatureLeft(now: Date, crop: CropConfig): number {
   if (isClockMode.value) {
     const hour = readNonNegativeInt(matureHour.value, '预计成熟时间小时')
@@ -200,10 +286,20 @@ function readMatureLeft(now: Date, crop: CropConfig): number {
   return readNonNegativeInt(matureHour.value, '当前成熟剩余小时') * 60 + readMinute(matureMinute.value, '当前成熟剩余分钟')
 }
 
+/**
+ * 计算 now 到 target 的分钟差，并向上取整。
+ *
+ * 负差值归零；具体时间模式使用该函数统一 Date 到分钟的口径。
+ */
 function clockDeltaMinutes(now: Date, target: Date): number {
   return Math.ceil(Math.max(0, target.getTime() - now.getTime()) / 60000)
 }
 
+/**
+ * 计算某个候选“小时:分钟 + 今日/明日”距离成熟的分钟数。
+ *
+ * 该函数只做时间差，不做业务有效性判断；调用方需再检查 0 < matureLeft <= 作物基础成熟时长。
+ */
 function clockMatureLeftForCandidate(now: Date, crop: CropConfig, hour: number, minute: number, day: ClockDay): number {
   const todayTime = new Date(now)
   todayTime.setHours(hour, minute, 0, 0)
@@ -218,6 +314,10 @@ function clockMatureLeftForCandidate(now: Date, crop: CropConfig, hour: number, 
   return clockDeltaMinutes(now, todayTime > now ? todayTime : tomorrowTime)
 }
 
+/**
+ * 为自动跳转决策读取成熟分钟的当前状态。
+ * @returns undefined 表示分钟为空、需要扫描 00–59；null 表示分钟非法；number 表示可用的精确分钟。
+ */
 function minuteDecisionValue(): number | null | undefined {
   const text = matureMinute.value.trim()
   if (text === '') return undefined
@@ -226,6 +326,11 @@ function minuteDecisionValue(): number | null | undefined {
   return minute >= 0 && minute <= 59 ? minute : null
 }
 
+/**
+ * 判断指定日期下某个小时是否存在有效成熟分钟。
+ *
+ * minute 为 undefined 时扫描 00–59；为 null 时直接无效；为 number 时只验证精确分钟。
+ */
 function clockHourHasValidMinute(now: Date, crop: CropConfig, hour: number, day: ClockDay, minute: number | null | undefined): boolean {
   if (hour < 0 || hour > 23 || !Number.isInteger(hour)) return false
   if (minute === null) return false
@@ -241,6 +346,11 @@ function clockHourHasValidMinute(now: Date, crop: CropConfig, hour: number, day:
   return false
 }
 
+/**
+ * 枚举某个日期下所有可作为成熟时间的小时值。
+ *
+ * 返回值供前缀可延伸性判断使用，确保“2”是否等待“20–23”取决于真实成熟窗口。
+ */
 function validClockHourValues(now: Date, crop: CropConfig, day: ClockDay, minute: number | null | undefined = undefined): number[] {
   const values = new Set<number>()
   for (let hour = 0; hour <= 23; hour += 1) {
@@ -249,10 +359,16 @@ function validClockHourValues(now: Date, crop: CropConfig, day: ClockDay, minute
   return [...values].sort((left, right) => left - right)
 }
 
+/** 合并多个小时集合并排序，用于今日/明日并集前缀判断。 */
 function mergeUniqueHours(...hourLists: number[][]): number[] {
   return [...new Set(hourLists.flat())].sort((left, right) => left - right)
 }
 
+/**
+ * 判断当前小时前缀是否还能延伸成更长有效小时。
+ *
+ * 若存在以该前缀开头的两位有效小时，自动跳转必须等待用户继续输入。
+ */
 function hasLongerHourWithPrefix(prefix: string, allowedHours: number[]): boolean {
   return allowedHours.some((hour) => {
     const text = String(hour)
@@ -260,6 +376,11 @@ function hasLongerHourWithPrefix(prefix: string, allowedHours: number[]): boolea
   })
 }
 
+/**
+ * 为 32 小时作物具体时间模式生成小时输入决策。
+ *
+ * 分别检查今日和明日是否可行：仅一边可行时返回 resolvedDay；两边都可行时尊重用户当前选择；两边都不可行时不跳转。
+ */
 function decideManualDayClockHourAutoAdvance(value: string, now: Date): AutoAdvanceDecision {
   const numericValue = Number(value)
   const crop = currentCrop.value
@@ -277,6 +398,11 @@ function decideManualDayClockHourAutoAdvance(value: string, now: Date): AutoAdva
   return { shouldAdvance: true }
 }
 
+/**
+ * 判断成熟小时输入是否完整。
+ *
+ * 倒计时按作物最大小时判断；具体时间按真实有效成熟窗口判断；自动跳转关闭时始终不产生副作用。
+ */
 function decideMatureHourAutoAdvance(value: string, now = new Date()): AutoAdvanceDecision {
   if (!autoAdvanceEnabled.value || value === '' || !/^\d+$/.test(value)) return { shouldAdvance: false }
   const numericValue = Number(value)
@@ -294,12 +420,23 @@ function decideMatureHourAutoAdvance(value: string, now = new Date()): AutoAdvan
   return { shouldAdvance: !hasLongerHourWithPrefix(value, allowedHours) }
 }
 
+/**
+ * 所有输入框自动跳转的统一入口。
+ *
+ * 成熟小时走日期/前缀决策，其他输入框沿用最大值与下一位是否必然超限的规则。
+ */
 function decideAutoAdvance(value: string, maxValue: number, input: HTMLInputElement, now = new Date()): AutoAdvanceDecision {
   if (!autoAdvanceEnabled.value || value === '') return { shouldAdvance: false }
   if (input === matureHourInput.value) return decideMatureHourAutoAdvance(value, now)
   return { shouldAdvance: Number(value) <= maxValue && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue) }
 }
 
+/**
+ * 执行核心成熟时间计算并写入结构化结果。
+ *
+ * 公式阶段依次为：原始成熟剩余、水分已消耗、本次可减少、浇水后剩余、理论最快剩余、理论总计可节省和预计最快成熟时间。
+ * 所有业务错误在此捕获并写入 error，模板据此切换错误/成功/空状态。
+ */
 function calculate(): void {
   try {
     clearError()
@@ -339,6 +476,7 @@ function calculate(): void {
   }
 }
 
+/** 清空所有输入、错误、成功结果和自动计算去重状态，并把焦点恢复到第一个输入框。 */
 function clearInputs(): void {
   matureHour.value = ''
   matureMinute.value = ''
@@ -352,29 +490,39 @@ function clearInputs(): void {
   nextTick(() => matureHourInput.value?.focus())
 }
 
+/** 清除当前错误消息；通常在用户修改模式、日期或作物后调用。 */
 function clearError(): void {
   error.value = ''
 }
 
+/** 键盘快捷键使用的时间模式切换函数，在倒计时和具体时间之间循环。 */
 function cycleTimeMode(): void {
   timeMode.value = isClockMode.value ? TIME_MODE_COUNTDOWN : TIME_MODE_CLOCK
 }
 
+/** 设置成熟时间输入模式，触发 watcher 持久化并刷新首个输入焦点。 */
 function setTimeMode(mode: TimeMode): void {
   timeMode.value = mode
 }
 
+/** 设置 32 小时具体时间模式的今日/明日选择，并清除旧错误。 */
 function setClockDay(day: ClockDay): void {
   clockDay.value = day
   clearError()
 }
 
+/** 从作物弹窗选择作物，不清空用户输入，只刷新当前作物状态并关闭弹窗。 */
 function setCrop(crop: CropConfig): void {
   cropName.value = crop.name
   clearError()
   closeDialog()
 }
 
+/**
+ * 打开指定弹窗并管理焦点来源。
+ *
+ * 设置弹窗进入帮助弹窗时不覆盖 lastFocusedElement，因此关闭帮助先回到设置，再关闭设置才回到顶部设置按钮。
+ */
 function openDialog(dialogName: DialogName): void {
   if (dialogName === 'autoAdvanceHelp' && activeDialog.value === 'settings') {
     activeDialog.value = dialogName
@@ -386,10 +534,12 @@ function openDialog(dialogName: DialogName): void {
   focusActiveDialog()
 }
 
+/** 返回指定弹窗是否为当前活动弹窗，供 aria-expanded 使用并避免模板类型窄化问题。 */
 function isDialogOpen(dialogName: DialogName): boolean {
   return activeDialog.value === dialogName
 }
 
+/** 根据 activeDialog 返回当前弹窗根元素，用于初始聚焦和焦点陷阱。 */
 function currentDialogElement(): HTMLElement | null {
   if (activeDialog.value === 'crop') return cropDialog.value
   if (activeDialog.value === 'settings') return settingsDialog.value
@@ -397,11 +547,13 @@ function currentDialogElement(): HTMLElement | null {
   return null
 }
 
+/** 收集弹窗内可聚焦元素，过滤 disabled 和 tabindex=-1，供 Tab 焦点循环使用。 */
 function focusableDialogElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>('button, input, [href], [tabindex]:not([tabindex="-1"])'))
     .filter((element) => !element.hasAttribute('disabled') && element.tabIndex !== -1)
 }
 
+/** 弹窗打开后将焦点移入第一个可聚焦控件；若没有控件则聚焦弹窗本身。 */
 function focusActiveDialog(): void {
   nextTick(() => {
     const dialog = currentDialogElement()
@@ -411,6 +563,11 @@ function focusActiveDialog(): void {
   })
 }
 
+/**
+ * 关闭当前弹窗并恢复焦点。
+ *
+ * 帮助弹窗是设置弹窗的二级弹窗：关闭帮助只返回设置并聚焦问号按钮；其他弹窗关闭到背景并恢复打开前焦点。
+ */
 function closeDialog(): void {
   if (activeDialog.value === 'autoAdvanceHelp') {
     activeDialog.value = 'settings'
@@ -425,6 +582,7 @@ function closeDialog(): void {
   })
 }
 
+/** 在弹窗内循环 Tab/Shift+Tab，防止键盘焦点落到背景页面。 */
 function trapDialogFocus(event: KeyboardEvent): void {
   const dialog = currentDialogElement()
   if (!dialog) return
@@ -446,6 +604,7 @@ function trapDialogFocus(event: KeyboardEvent): void {
   }
 }
 
+/** 统一处理弹窗内 Esc 和 Tab；Esc 与遮罩、Android 返回键共用 closeDialog。 */
 function handleDialogKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault()
@@ -455,14 +614,17 @@ function handleDialogKeydown(event: KeyboardEvent): void {
   if (event.key === 'Tab') trapDialogFocus(event)
 }
 
+/** 类型守卫：确认事件目标或 ref 值是真实 HTMLInputElement。 */
 function isHtmlInputElement(value: EventTarget | HTMLInputElement | null): value is HTMLInputElement {
   return typeof HTMLInputElement !== 'undefined' && value instanceof HTMLInputElement
 }
 
+/** 返回四个数字输入框的当前 DOM 顺序，供方向键和 Enter 导航使用。 */
 function orderedInputElements(): HTMLInputElement[] {
   return [matureHourInput.value, matureMinuteInput.value, waterHourInput.value, waterMinuteInput.value].filter(isHtmlInputElement)
 }
 
+/** 根据方向键在相邻输入框之间移动焦点，并全选目标内容。 */
 function focusAdjacentInput(event: NumericKeyboardEvent, step: number): void {
   if (!isHtmlInputElement(event.target)) return
   const inputs = orderedInputElements()
@@ -474,6 +636,7 @@ function focusAdjacentInput(event: NumericKeyboardEvent, step: number): void {
   focusAndSelectInput(target)
 }
 
+/** 同时支持 ref 对象和直接 DOM 节点，解析出可聚焦输入框。 */
 function resolveInputElement(inputRef: MaybeInputRef): HTMLInputElement | null {
   if (!inputRef) return null
   if (typeof HTMLInputElement !== 'undefined' && inputRef instanceof HTMLInputElement) return inputRef
@@ -482,11 +645,13 @@ function resolveInputElement(inputRef: MaybeInputRef): HTMLInputElement | null {
   return null
 }
 
+/** 聚焦输入框并全选文本，方便用户连续覆盖输入。 */
 function focusAndSelectInput(input: HTMLInputElement): void {
   input.focus()
   input.select()
 }
 
+/** 在自动跳转开启时延迟聚焦下一项，等待 Vue 完成 v-model 和 DOM 同步。 */
 function scheduleFocusInput(input: HTMLInputElement): void {
   if (!autoAdvanceEnabled.value) return
   nextTick(() => {
@@ -494,6 +659,7 @@ function scheduleFocusInput(input: HTMLInputElement): void {
   })
 }
 
+/** 根据输入框 DOM 节点反写对应的字符串状态；sanitizeNumber 的唯一状态写入口。 */
 function setInputModel(input: HTMLInputElement, value: string): void {
   if (input === matureHourInput.value) matureHour.value = value
   if (input === matureMinuteInput.value) matureMinute.value = value
@@ -501,6 +667,11 @@ function setInputModel(input: HTMLInputElement, value: string): void {
   if (input === waterMinuteInput.value) waterMinute.value = value
 }
 
+/**
+ * 在用户输入后根据自动跳转决策移动到下一输入框。
+ *
+ * 对成熟小时会先应用唯一可行的今日/明日决策，再调度焦点；其他输入框只处理焦点。
+ */
 function advanceIfInputIsComplete(input: HTMLInputElement, maxValue: number, nextRef: MaybeInputRef): void {
   const nextInput = resolveInputElement(nextRef)
   if (!nextInput) return
@@ -513,6 +684,11 @@ function advanceIfInputIsComplete(input: HTMLInputElement, maxValue: number, nex
   scheduleFocusInput(nextInput)
 }
 
+/**
+ * 数字输入的统一清洗入口。
+ *
+ * 删除非数字、限制最大值、同步 v-model，并在真实 input 事件后触发自动跳转或最后分钟自动计算。
+ */
 function sanitizeNumber(event: NumericInputEvent, maxValue: number, nextRef: MaybeInputRef = null, autoCalculateOnTwoDigitMinute = false): void {
   if (!isHtmlInputElement(event.target)) return
   const cleaned = event.target.value.replace(/\D/g, '')
@@ -528,6 +704,11 @@ function sanitizeNumber(event: NumericInputEvent, maxValue: number, nextRef: May
   advanceIfInputIsComplete(event.target, maxValue, nextRef)
 }
 
+/**
+ * 水分分钟输入两位合法数字 00–59 后自动计算一次。
+ *
+ * rawValue 保留用户原始两位输入，isOverMax 防止 60–99 被 clamp 成 59 后误触发。
+ */
 function maybeAutoCalculateFromWaterMinute(rawValue: string, isOverMax: boolean): void {
   if (!autoAdvanceEnabled.value || isOverMax) return
   if (!/^\d{2}$/.test(rawValue) || Number(rawValue) > 59) return
@@ -536,6 +717,7 @@ function maybeAutoCalculateFromWaterMinute(rawValue: string, isOverMax: boolean)
   calculate()
 }
 
+/** Enter 键导航：前三个输入框前往下一项，最后一个输入框执行 calculate。 */
 function handleInputEnter(event: NumericKeyboardEvent, nextRef: MaybeInputRef = null): void {
   event.preventDefault()
   const nextInput = resolveInputElement(nextRef)
@@ -543,6 +725,11 @@ function handleInputEnter(event: NumericKeyboardEvent, nextRef: MaybeInputRef = 
   else calculate()
 }
 
+/**
+ * 全局键盘入口。
+ *
+ * 弹窗打开时 Esc 优先关闭弹窗；背景状态下支持 Alt+X 切换模式和连续 Backspace 清空。
+ */
 function handleGlobalKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && activeDialog.value) {
     event.preventDefault()
@@ -569,6 +756,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
 
 <template>
   <div class="app-shell" @keydown="handleGlobalKeydown">
+    <!-- 顶部栏：固定标题与设置入口。 -->
     <header class="app-header">
       <h1>成熟计算器</h1>
       <button class="icon-button" type="button" aria-label="打开设置" @click="openDialog('settings')">⚙️</button>
@@ -578,6 +766,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
       <div class="page-shell">
         <p class="notice-card">作物类型是 8/16/32 小时作物，不是当前剩余成熟时间。</p>
 
+        <!-- 输入区：时间模式、成熟时间、水分剩余与作物参考说明。 -->
         <form id="calculator-form" class="calculator-card" @submit.prevent="calculate">
           <div class="mode-line">
             <div class="mode-switch" role="group" aria-label="成熟时间输入模式">
@@ -618,6 +807,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
           <p class="reference">{{ referenceText }}</p>
         </form>
 
+        <!-- 结果区：空状态、错误状态和结构化成功结果共用同一固定卡片。 -->
         <section class="result-card" aria-label="计算结果" aria-live="polite">
           <div class="result-heading">
             <span>结果</span>
@@ -665,12 +855,14 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
       </div>
     </main>
 
+    <!-- 底部栏：清空、作物选择和表单提交三个主要操作。 -->
     <footer class="app-footer">
       <button class="footer-button secondary" type="button" @click="clearInputs">清空</button>
       <button class="footer-button crop-button" type="button" aria-haspopup="dialog" :aria-expanded="activeDialog === 'crop'" @click="openDialog('crop')">{{ cropButtonText }}</button>
       <button class="footer-button primary" type="submit" form="calculator-form">计算</button>
     </footer>
 
+    <!-- 弹窗区：Teleport 到 body，避免受 App Shell overflow 限制。 -->
     <teleport to="body">
       <div v-if="activeDialog === 'crop'" class="dialog-backdrop" role="presentation" @click.self="closeDialog" @keydown="handleDialogKeydown">
         <section ref="cropDialog" class="dialog-card crop-dialog" role="dialog" aria-modal="true" aria-labelledby="crop-dialog-title" tabindex="-1">
