@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch, type Ref } from 'vue'
+import { App as CapacitorApp } from '@capacitor/app'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 
 type TimeMode = 'countdown' | 'clock'
 type ClockDay = '今日' | '明日'
+type DialogName = 'crop' | 'settings'
 
 interface CropConfig {
   name: string
@@ -29,7 +31,6 @@ type InputRef = Ref<HTMLInputElement | null>
 type MaybeInputRef = InputRef | HTMLInputElement | null
 type NumericInputEvent = Event
 type NumericKeyboardEvent = KeyboardEvent
-type NumericInputBeforeEvent = InputEvent
 
 const TIME_MODE_COUNTDOWN: TimeMode = 'countdown'
 const TIME_MODE_CLOCK: TimeMode = 'clock'
@@ -40,6 +41,7 @@ const TIME_MODE_LABELS: Record<TimeMode, string> = {
 const CLOCK_DAY_TODAY: ClockDay = '今日'
 const CLOCK_DAY_TOMORROW: ClockDay = '明日'
 const STORAGE_KEY = 'farm-calculator-time-mode'
+const AUTO_ADVANCE_STORAGE_KEY = 'farm-calculator-auto-advance'
 const BACKSPACE_CLEAR_PRESS_COUNT = 3
 const BACKSPACE_CLEAR_WINDOW_MS = 800
 
@@ -59,12 +61,17 @@ const waterMinute = ref<string>('')
 const result = ref<string>('请输入数据后点击“计算”按钮计算；\n\n或者在最后一个输入框按回车计算；\n\n计算结果将会显示在这里。')
 const error = ref<string>('')
 const backspacePressTimes = ref<number[]>([])
+const autoAdvanceEnabled = ref<boolean>(true)
+const activeDialog = ref<DialogName | null>(null)
+const lastFocusedElement = ref<HTMLElement | null>(null)
+const lastAutoCalculatedWaterMinute = ref<string>('')
 const matureHourInput = ref<HTMLInputElement | null>(null)
 const matureMinuteInput = ref<HTMLInputElement | null>(null)
 const waterHourInput = ref<HTMLInputElement | null>(null)
 const waterMinuteInput = ref<HTMLInputElement | null>(null)
 
 const currentCrop = computed(() => crops.find((crop) => crop.name === cropName.value) ?? crops[1])
+const cropButtonText = computed(() => currentCrop.value.name.replace('作物', ''))
 const isClockMode = computed(() => timeMode.value === TIME_MODE_CLOCK)
 const needsManualDay = computed(() => isClockMode.value && currentCrop.value.baseMinutes >= 32 * 60)
 const clockAutoDay = computed(() => {
@@ -79,21 +86,49 @@ const clockAutoDay = computed(() => {
 })
 const referenceText = computed(() => {
   const crop = currentCrop.value
-  return `当前按【${crop.name}】计算：基础成熟 ${formatMinutes(crop.baseMinutes)}；水分最大维持 ${formatMinutes(crop.waterMaxMinutes)}；满额浇水减少 ${formatMinutes(crop.waterMaxMinutes / 4)}；一键种植并自动浇水后，理论最快成熟时间 ${formatMinutes((crop.baseMinutes - crop.waterMaxMinutes / 4) * 4 / 5)}。`
+  return `基础成熟 ${formatMinutes(crop.baseMinutes)}；水分最大维持 ${formatMinutes(crop.waterMaxMinutes)}；满额浇水减少 ${formatMinutes(crop.waterMaxMinutes / 4)}；理论最快 ${formatMinutes((crop.baseMinutes - crop.waterMaxMinutes / 4) * 4 / 5)}。`
 })
 const matureHourMax = computed(() => isClockMode.value ? 23 : currentCrop.value.baseMinutes / 60)
 const waterHourMax = computed(() => Math.floor(currentCrop.value.waterMaxMinutes / 60))
 
+let removeBackButtonListener: (() => void) | undefined
+
 onMounted(() => {
   const savedMode = localStorage.getItem(STORAGE_KEY)
   if (savedMode === TIME_MODE_COUNTDOWN || savedMode === TIME_MODE_CLOCK) timeMode.value = savedMode
+  const savedAutoAdvance = localStorage.getItem(AUTO_ADVANCE_STORAGE_KEY)
+  autoAdvanceEnabled.value = savedAutoAdvance === null ? true : savedAutoAdvance === 'true'
+  void CapacitorApp.addListener('backButton', ({ canGoBack }) => {
+    if (activeDialog.value) {
+      closeDialog()
+      return
+    }
+    if (!canGoBack) return
+    window.history.back()
+  }).then((handle) => {
+    removeBackButtonListener = () => void handle.remove()
+  })
   nextTick(() => matureHourInput.value?.focus())
+})
+
+onUnmounted(() => {
+  removeBackButtonListener?.()
 })
 
 watch(timeMode, (mode) => {
   localStorage.setItem(STORAGE_KEY, mode)
   clearError()
+  lastAutoCalculatedWaterMinute.value = ''
   nextTick(() => matureHourInput.value?.focus())
+})
+
+watch(autoAdvanceEnabled, (enabled) => {
+  localStorage.setItem(AUTO_ADVANCE_STORAGE_KEY, String(enabled))
+  lastAutoCalculatedWaterMinute.value = ''
+})
+
+watch(waterMinute, (value) => {
+  if (value !== lastAutoCalculatedWaterMinute.value) lastAutoCalculatedWaterMinute.value = ''
 })
 
 function toOptionalInteger(value: string): number | null {
@@ -160,6 +195,61 @@ function clockDeltaMinutes(now: Date, target: Date): number {
   return Math.ceil(Math.max(0, target.getTime() - now.getTime()) / 60000)
 }
 
+function clockMatureLeftForCandidate(now: Date, crop: CropConfig, hour: number, minute: number, day: ClockDay): number {
+  const todayTime = new Date(now)
+  todayTime.setHours(hour, minute, 0, 0)
+  if (crop.baseMinutes >= 32 * 60) {
+    if (day === CLOCK_DAY_TODAY) return todayTime > now ? clockDeltaMinutes(now, todayTime) : -1
+    const tomorrowTime = new Date(todayTime)
+    tomorrowTime.setDate(tomorrowTime.getDate() + 1)
+    return clockDeltaMinutes(now, tomorrowTime)
+  }
+  const tomorrowTime = new Date(todayTime)
+  tomorrowTime.setDate(tomorrowTime.getDate() + 1)
+  return clockDeltaMinutes(now, todayTime > now ? todayTime : tomorrowTime)
+}
+
+function validClockHourValues(now: Date, crop: CropConfig, day: ClockDay): number[] {
+  const values = new Set<number>()
+  for (let hour = 0; hour <= 23; hour += 1) {
+    for (let minute = 0; minute <= 59; minute += 1) {
+      const matureLeft = clockMatureLeftForCandidate(now, crop, hour, minute, day)
+      if (matureLeft > 0 && matureLeft <= crop.baseMinutes) {
+        values.add(hour)
+        break
+      }
+    }
+  }
+  return [...values].sort((left, right) => left - right)
+}
+
+function hasLongerHourWithPrefix(prefix: string, allowedHours: number[]): boolean {
+  return allowedHours.some((hour) => {
+    const text = String(hour)
+    return text.length > prefix.length && text.startsWith(prefix)
+  })
+}
+
+function isMatureHourCompleteForAutoAdvance(value: string, now = new Date()): boolean {
+  if (!autoAdvanceEnabled.value || value === '' || !/^\d+$/.test(value)) return false
+  const numericValue = Number(value)
+  if (!Number.isInteger(numericValue)) return false
+  if (!isClockMode.value) {
+    if (numericValue < 0 || numericValue > matureHourMax.value) return false
+    return !hasLongerHourWithPrefix(value, Array.from({ length: Math.floor(matureHourMax.value) + 1 }, (_, index) => index))
+  }
+
+  const allowedHours = validClockHourValues(now, currentCrop.value, needsManualDay.value ? clockDay.value : clockAutoDay.value as ClockDay)
+  if (!allowedHours.includes(numericValue)) return false
+  return !hasLongerHourWithPrefix(value, allowedHours)
+}
+
+function shouldAutoAdvance(value: string, maxValue: number, input: HTMLInputElement): boolean {
+  if (!autoAdvanceEnabled.value || value === '') return false
+  if (input === matureHourInput.value) return isMatureHourCompleteForAutoAdvance(value)
+  return Number(value) <= maxValue && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue)
+}
+
 function calculate(): void {
   try {
     clearError()
@@ -185,7 +275,6 @@ function calculate(): void {
     void calculationResult
 
     result.value = `当前按【${crop.name}】计算（成熟时间输入：${TIME_MODE_LABELS[timeMode.value]}）\n\n距上次浇水：${formatMinutes(elapsedSinceLastWater)}\n本次可减少：${formatMinutes(currentWaterReduce)}\n浇水后剩余：${formatMinutes(matureAfterWater)}\n\n理论最快还需：${formatMinutes(fastestLeft)}\n预计最快成熟时间：\n${formatDateTime(fastestEta)}`
-    scrollToBottomOnMobile()
   } catch (exception: unknown) {
     error.value = exception instanceof Error ? exception.message : '计算失败，请检查输入。'
   }
@@ -197,6 +286,7 @@ function clearInputs(): void {
   waterHour.value = ''
   waterMinute.value = ''
   backspacePressTimes.value = []
+  lastAutoCalculatedWaterMinute.value = ''
   error.value = ''
   result.value = '请输入数据后点击计算。\n\n也可以在最后一个输入框按回车计算。'
   nextTick(() => matureHourInput.value?.focus())
@@ -206,20 +296,42 @@ function clearError(): void {
   error.value = ''
 }
 
-function cycleCrop(step = 1): void {
-  const currentIndex = crops.findIndex((crop) => crop.name === cropName.value)
-  cropName.value = crops[(currentIndex + step + crops.length) % crops.length].name
-}
-
 function cycleTimeMode(): void {
   timeMode.value = isClockMode.value ? TIME_MODE_COUNTDOWN : TIME_MODE_CLOCK
 }
 
-function scrollToBottomOnMobile(): void {
-  if (!window.matchMedia('(max-width: 780px)').matches) return
+function setTimeMode(mode: TimeMode): void {
+  timeMode.value = mode
+}
+
+function setClockDay(day: ClockDay): void {
+  clockDay.value = day
+  clearError()
+}
+
+function setCrop(crop: CropConfig): void {
+  cropName.value = crop.name
+  clearError()
+  closeDialog()
+}
+
+function openDialog(dialogName: DialogName): void {
+  lastFocusedElement.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  activeDialog.value = dialogName
+}
+
+function closeDialog(): void {
+  const focusTarget = lastFocusedElement.value
+  activeDialog.value = null
   nextTick(() => {
-    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' })
+    if (focusTarget?.isConnected) focusTarget.focus()
   })
+}
+
+function handleDialogKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  closeDialog()
 }
 
 function isHtmlInputElement(value: EventTarget | HTMLInputElement | null): value is HTMLInputElement {
@@ -255,6 +367,7 @@ function focusAndSelectInput(input: HTMLInputElement): void {
 }
 
 function scheduleFocusInput(input: HTMLInputElement): void {
+  if (!autoAdvanceEnabled.value) return
   nextTick(() => {
     setTimeout(() => focusAndSelectInput(input), 0)
   })
@@ -267,82 +380,52 @@ function setInputModel(input: HTMLInputElement, value: string): void {
   if (input === waterMinuteInput.value) waterMinute.value = value
 }
 
-function maxForInput(input: HTMLInputElement): number | null {
-  if (input === matureHourInput.value) return matureHourMax.value
-  if (input === matureMinuteInput.value) return 59
-  if (input === waterHourInput.value) return waterHourMax.value
-  if (input === waterMinuteInput.value) return 59
-  return null
-}
-
-function shouldAutoAdvance(value: string, maxValue: number): boolean {
-  return value !== '' && (value.length >= String(maxValue).length || Number(value) * 10 > maxValue)
-}
-
 function advanceIfInputIsComplete(input: HTMLInputElement, maxValue: number, nextRef: MaybeInputRef): void {
   const nextInput = resolveInputElement(nextRef)
-  if (!nextInput || !shouldAutoAdvance(input.value.trim(), maxValue)) return
+  if (!nextInput || !shouldAutoAdvance(input.value.trim(), maxValue, input)) return
   scheduleFocusInput(nextInput)
 }
 
-function routeOverflowDigit(event: NumericKeyboardEvent, maxValue: number, nextRef: MaybeInputRef): void {
-  const digit = event.key
-  if (!/^\d$/.test(digit)) return
-  routeOverflowText(event, digit, maxValue, nextRef)
-}
-
-function routeOverflowBeforeInput(event: NumericInputBeforeEvent, maxValue: number, nextRef: MaybeInputRef): void {
-  const inputText = event.data ?? ''
-  if (event.inputType !== 'insertText' || !/^\d$/.test(inputText)) return
-  routeOverflowText(event, inputText, maxValue, nextRef)
-}
-
-function routeOverflowText(event: NumericKeyboardEvent | NumericInputBeforeEvent, text: string, maxValue: number, nextRef: MaybeInputRef): void {
-  if (!isHtmlInputElement(event.target)) return
-  const input = event.target
-  const nextInput = resolveInputElement(nextRef)
-  if (!nextInput) return
-
-  const start = input.selectionStart ?? input.value.length
-  const end = input.selectionEnd ?? input.value.length
-  const proposed = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`
-  if (proposed === '') return
-  if (Number(proposed) <= maxValue) {
-    if (shouldAutoAdvance(proposed, maxValue)) scheduleFocusInput(nextInput)
-    return
-  }
-
-  event.preventDefault()
-  focusAndSelectInput(nextInput)
-
-  const nextMax = maxForInput(nextInput)
-  const nextProposed = `${nextInput.value}${text}`
-  if (nextMax === null || Number(nextProposed) > nextMax) return
-  setInputModel(nextInput, nextProposed)
-  nextTick(() => {
-    nextInput.value = nextProposed
-    advanceIfInputIsComplete(nextInput, nextMax, orderedInputElements()[orderedInputElements().indexOf(nextInput) + 1])
-  })
-}
-
-function sanitizeNumber(event: NumericInputEvent, _modelValue: string, maxValue: number, nextRef: MaybeInputRef = null): void {
+function sanitizeNumber(event: NumericInputEvent, maxValue: number, nextRef: MaybeInputRef = null, autoCalculateOnTwoDigitMinute = false): void {
   if (!isHtmlInputElement(event.target)) return
   const cleaned = event.target.value.replace(/\D/g, '')
+  const isOverMax = cleaned !== '' && Number(cleaned) > maxValue
   const normalized = cleaned === '' ? '' : String(Math.min(Number(cleaned), maxValue))
   setInputModel(event.target, normalized)
   event.target.value = normalized
+
+  if (autoCalculateOnTwoDigitMinute) {
+    maybeAutoCalculateFromWaterMinute(cleaned, isOverMax)
+    return
+  }
   advanceIfInputIsComplete(event.target, maxValue, nextRef)
 }
 
+function maybeAutoCalculateFromWaterMinute(rawValue: string, isOverMax: boolean): void {
+  if (!autoAdvanceEnabled.value || isOverMax) return
+  if (!/^\d{2}$/.test(rawValue) || Number(rawValue) > 59) return
+  if (rawValue === lastAutoCalculatedWaterMinute.value) return
+  lastAutoCalculatedWaterMinute.value = rawValue
+  calculate()
+}
+
+function handleInputEnter(event: NumericKeyboardEvent, nextRef: MaybeInputRef = null): void {
+  event.preventDefault()
+  const nextInput = resolveInputElement(nextRef)
+  if (nextInput) focusAndSelectInput(nextInput)
+  else calculate()
+}
+
 function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && activeDialog.value) {
+    event.preventDefault()
+    closeDialog()
+    return
+  }
+  if (activeDialog.value) return
   if (event.altKey && event.key.toLowerCase() === 'x') {
     event.preventDefault()
     cycleTimeMode()
-    return
-  }
-  if (event.key === 'Tab') {
-    event.preventDefault()
-    cycleCrop(event.shiftKey ? -1 : 1)
     return
   }
   if (event.key === 'Backspace') {
@@ -358,74 +441,98 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <main class="page-shell" @keydown="handleGlobalKeydown">
-    <section class="hero-card">
-      <p class="eyebrow">Honor of Kings Farm Tool</p>
-      <h1><span class="desktop-title">王者荣耀农场最快成熟时间计算器</span><span class="mobile-title">王者荣耀农场<br />理论最快成熟时间<br />计算器</span></h1>
-      <p class="subtitle">注意：作物类型指 8/16/32 小时作物，不是当前还剩几小时成熟。</p>
-    </section>
+  <div class="app-shell" @keydown="handleGlobalKeydown">
+    <header class="app-header">
+      <h1>成熟计算器</h1>
+      <button class="icon-button" type="button" aria-label="打开设置" @click="openDialog('settings')">⚙️</button>
+    </header>
 
-    <section class="calculator-grid">
-      <form class="panel input-panel" @submit.prevent="calculate">
-        <div class="panel-heading">
-          <span>输入参数</span>
-          <small class="desktop-shortcuts">Tab 切换作物，Alt+X 切换时间模式，连续 3 次 Backspace 清空</small>
-          <small class="mobile-clear-hint">连续 3 次删除可清空所有输入，并回到第一个输入框</small>
-        </div>
+    <main class="app-main">
+      <div class="page-shell">
+        <p class="notice-card">作物类型是 8/16/32 小时作物，不是当前剩余成熟时间。</p>
 
-        <label class="field full">
-          <span>作物类型</span>
-          <select v-model="cropName" @change="clearError">
-            <option v-for="crop in crops" :key="crop.name" :value="crop.name">{{ crop.name }}</option>
-          </select>
-        </label>
+        <form id="calculator-form" class="calculator-card" @submit.prevent="calculate">
+          <div class="mode-line">
+            <div class="mode-switch" role="group" aria-label="成熟时间输入模式">
+              <button class="mode-option" type="button" :class="{ active: !isClockMode }" :aria-pressed="!isClockMode" @click="setTimeMode(TIME_MODE_COUNTDOWN)">倒计时</button>
+              <button class="mode-option" type="button" :class="{ active: isClockMode }" :aria-pressed="isClockMode" @click="setTimeMode(TIME_MODE_CLOCK)">具体时间</button>
+              <span class="mode-thumb" :class="{ right: isClockMode }" aria-hidden="true"></span>
+            </div>
 
-        <div class="field full">
-          <span>成熟时间输入</span>
-          <div class="segmented">
-            <label><input v-model="timeMode" type="radio" :value="TIME_MODE_COUNTDOWN" /> 显示倒计时</label>
-            <label><input v-model="timeMode" type="radio" :value="TIME_MODE_CLOCK" /> 显示具体时间</label>
+            <div class="mode-extra">
+              <div v-if="needsManualDay" class="day-switch" role="group" aria-label="成熟日期">
+                <button type="button" :class="{ active: clockDay === CLOCK_DAY_TODAY }" @click="setClockDay(CLOCK_DAY_TODAY)">今日</button>
+                <button type="button" :class="{ active: clockDay === CLOCK_DAY_TOMORROW }" @click="setClockDay(CLOCK_DAY_TOMORROW)">明日</button>
+              </div>
+              <span v-else-if="isClockMode" class="auto-day">{{ clockAutoDay }}</span>
+            </div>
           </div>
-        </div>
 
-        <div v-if="needsManualDay" class="field full compact-row">
-          <span>日期</span>
-          <select v-model="clockDay">
-            <option>{{ CLOCK_DAY_TODAY }}</option>
-            <option>{{ CLOCK_DAY_TOMORROW }}</option>
-          </select>
-        </div>
-        <p v-else-if="isClockMode" class="date-hint">日期：{{ clockAutoDay }}</p>
+          <div class="time-line">
+            <span class="row-label">{{ isClockMode ? '预计成熟时间' : '成熟剩余' }}</span>
+            <div class="time-inputs">
+              <input ref="matureHourInput" v-model="matureHour" class="time-input" inputmode="numeric" autocomplete="off" aria-label="成熟时间小时" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="handleInputEnter($event, matureMinuteInput)" @input="sanitizeNumber($event, matureHourMax, matureMinuteInput)" />
+              <span class="unit-label">{{ isClockMode ? '点' : '小时' }}</span>
+              <input ref="matureMinuteInput" v-model="matureMinute" class="time-input minute" inputmode="numeric" autocomplete="off" aria-label="成熟时间分钟" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="handleInputEnter($event, waterHourInput)" @input="sanitizeNumber($event, 59, waterHourInput)" />
+              <span class="unit-label suffix-label">{{ isClockMode ? '分' : '分钟' }}</span>
+            </div>
+          </div>
 
-        <div class="time-row">
-          <span class="row-label">{{ isClockMode ? '预计成熟时间' : '当前成熟剩余' }}</span>
-          <input ref="matureHourInput" v-model="matureHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, matureHourMax, matureMinuteInput)" @keydown="routeOverflowDigit($event, matureHourMax, matureMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureHour, matureHourMax, matureMinuteInput)" />
-          <span class="unit-label">{{ isClockMode ? '点' : '小时' }}</span>
-          <input ref="matureMinuteInput" v-model="matureMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, waterHourInput)" @keydown="routeOverflowDigit($event, 59, waterHourInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, matureMinute, 59, waterHourInput)" />
-          <span class="unit-label suffix-label">{{ isClockMode ? '分成熟' : '分钟后成熟' }}</span>
-        </div>
+          <div class="time-line">
+            <span class="row-label">当前水分还能维持</span>
+            <div class="time-inputs">
+              <input ref="waterHourInput" v-model="waterHour" class="time-input" inputmode="numeric" autocomplete="off" aria-label="水分剩余小时" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="handleInputEnter($event, waterMinuteInput)" @input="sanitizeNumber($event, waterHourMax, waterMinuteInput)" />
+              <span class="unit-label">小时</span>
+              <input ref="waterMinuteInput" v-model="waterMinute" class="time-input minute" inputmode="numeric" autocomplete="off" aria-label="水分剩余分钟" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="handleInputEnter($event)" @input="sanitizeNumber($event, 59, null, true)" />
+              <span class="unit-label suffix-label">分钟</span>
+            </div>
+          </div>
 
-        <div class="time-row">
-          <span class="row-label">当前水分还能维持</span>
-          <input ref="waterHourInput" v-model="waterHour" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, waterHourMax, waterMinuteInput)" @keydown="routeOverflowDigit($event, waterHourMax, waterMinuteInput)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="focusAdjacentInput($event, 1)" @input="sanitizeNumber($event, waterHour, waterHourMax, waterMinuteInput)" />
-          <span class="unit-label">小时</span>
-          <input ref="waterMinuteInput" v-model="waterMinute" inputmode="numeric" autocomplete="off" @beforeinput="routeOverflowBeforeInput($event, 59, null)" @keydown="routeOverflowDigit($event, 59, null)" @keydown.up.prevent="focusAdjacentInput($event, -1)" @keydown.left.prevent="focusAdjacentInput($event, -1)" @keydown.down.prevent="focusAdjacentInput($event, 1)" @keydown.right.prevent="focusAdjacentInput($event, 1)" @keydown.enter.prevent="calculate" @input="sanitizeNumber($event, waterMinute, 59)" />
-          <span class="unit-label suffix-label">分钟</span>
-        </div>
+          <p class="reference">{{ referenceText }}</p>
+        </form>
 
-        <div class="actions">
-          <button class="primary" type="submit">🧮 计算</button>
-          <button type="button" @click="clearInputs">🗑 清空</button>
-        </div>
+        <section class="result-card" aria-label="计算结果">
+          <div class="result-heading">
+            <span>结果</span>
+            <span v-if="error" class="error-inline">{{ error }}</span>
+          </div>
+          <pre>{{ error || result }}</pre>
+        </section>
+      </div>
+    </main>
 
-        <p class="reference">{{ referenceText }}</p>
-      </form>
+    <footer class="app-footer">
+      <button class="footer-button secondary" type="button" @click="clearInputs">清空</button>
+      <button class="footer-button crop-button" type="button" aria-haspopup="dialog" :aria-expanded="activeDialog === 'crop'" @click="openDialog('crop')">{{ cropButtonText }}</button>
+      <button class="footer-button primary" type="submit" form="calculator-form">计算</button>
+    </footer>
 
-      <aside class="panel result-panel">
-        <div class="panel-heading success"><span>计算结果</span></div>
-        <div v-if="error" class="error-box">{{ error }}</div>
-        <pre>{{ result }}</pre>
-      </aside>
-    </section>
-  </main>
+    <teleport to="body">
+      <div v-if="activeDialog === 'crop'" class="dialog-backdrop" role="presentation" @click.self="closeDialog" @keydown="handleDialogKeydown">
+        <section class="dialog-card crop-dialog" role="dialog" aria-modal="true" aria-labelledby="crop-dialog-title" tabindex="-1">
+          <div class="dialog-head">
+            <h2 id="crop-dialog-title">选择作物</h2>
+            <button class="close-button" type="button" aria-label="关闭作物选择" @click="closeDialog">×</button>
+          </div>
+          <div class="crop-options">
+            <button v-for="crop in crops" :key="crop.name" type="button" :class="{ active: crop.name === cropName }" @click="setCrop(crop)">{{ crop.name }}</button>
+          </div>
+        </section>
+      </div>
+
+      <div v-if="activeDialog === 'settings'" class="dialog-backdrop" role="presentation" @click.self="closeDialog" @keydown="handleDialogKeydown">
+        <section class="dialog-card settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" tabindex="-1">
+          <div class="dialog-head">
+            <h2 id="settings-dialog-title">设置</h2>
+            <button class="close-button" type="button" aria-label="关闭设置" @click="closeDialog">×</button>
+          </div>
+          <label class="switch-row">
+            <span>输入完整后自动跳到下一项</span>
+            <input v-model="autoAdvanceEnabled" class="sr-only" type="checkbox" />
+            <span class="switch-control" :class="{ active: autoAdvanceEnabled }" aria-hidden="true"></span>
+          </label>
+        </section>
+      </div>
+    </teleport>
+  </div>
 </template>
